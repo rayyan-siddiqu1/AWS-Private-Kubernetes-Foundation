@@ -1,0 +1,97 @@
+# =============================================================================
+# Terraform
+# =============================================================================
+
+# Local .terraform directories (downloaded providers and modules)
+**/.terraform/
+
+# Terraform lock file — commit this to pin provider versions
+# !.terraform.lock.hcl
+
+# State files — never commit; managed remotely via S3 backend
+*.tfstate
+*.tfstate.*
+*.tfstate.backup
+
+# Plan output files — may contain sensitive values
+*.tfplan
+*.plan
+
+# Crash log
+crash.log
+crash.*.log
+
+# Terraform variable files that may contain secrets
+# terraform.tfvars is committed in this project (no secrets in it)
+# Uncomment the line below if you add sensitive values to tfvars
+# *.tfvars
+# *.tfvars.json
+
+# Override files (local developer overrides — not for version control)
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# CLI configuration file (contains credentials)
+.terraformrc
+terraform.rc
+
+# =============================================================================
+# Secrets and credentials
+# =============================================================================
+*.pem
+*.key
+*.p12
+*.pfx
+*.cer
+*.crt
+.env
+.env.*
+secrets.*
+*secrets*
+*credentials*
+
+# =============================================================================
+# OS
+# =============================================================================
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Linux
+*~
+
+# =============================================================================
+# Editors and IDEs
+# =============================================================================
+
+# VS Code
+.vscode/
+*.code-workspace
+
+# JetBrains (IntelliJ, GoLand, etc.)
+.idea/
+*.iml
+
+# Vim
+*.swp
+*.swo
+[._]*.s[a-v][a-z]
+[._]*.sw[a-p]
+
+# =============================================================================
+# Logs and temp files
+# =============================================================================
+*.log
+*.tmp
+*.bak
