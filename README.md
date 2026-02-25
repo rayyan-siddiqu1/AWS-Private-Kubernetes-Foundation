@@ -1,10 +1,31 @@
 # AWS Private Kubernetes Foundation
 
-A production-grade Terraform project that provisions a 3-node Kubernetes cluster on AWS EC2 using a modular, multi-environment architecture.
+A production-grade, end-to-end platform that provisions a private Kubernetes cluster on AWS and bootstraps it with a full service mesh stack — all via code.
+
+**Terraform** provisions the AWS infrastructure (VPC, EC2, IAM, security groups, remote state). **Ansible** installs a kubeadm-based Kubernetes cluster and then layers on a complete platform: NGINX Ingress, cert-manager, ArgoCD, Prometheus/Grafana, Istio, Consul, and a demo service-mesh application. Every component is idempotent and can be re-run safely.
 
 ---
 
-## Architecture Overview
+## What Gets Built
+
+```
+AWS Infrastructure (Terraform)
+└── 3-node Kubernetes cluster (kubeadm, Ubuntu 24.04)
+    ├── Cluster networking: Calico CNI
+    ├── Cluster observability: Metrics Server
+    └── Platform layer (Ansible, Helm)
+        ├── NGINX Ingress Controller  — edge TLS termination (NodePort 30080/30443)
+        ├── cert-manager              — self-signed TLS certificates (nip.io hostnames)
+        ├── ArgoCD                    — GitOps continuous delivery
+        ├── Prometheus + Grafana      — cluster and application observability
+        ├── Istio                     — service mesh (CRDs + istiod, opt-in per namespace)
+        ├── Consul                    — service discovery + Connect sidecar mesh
+        └── Demo app (test-app ns)    — frontend/backend wired via Consul Connect
+```
+
+---
+
+## Architecture
 
 ```
                           AWS Region (ap-south-1)
@@ -36,84 +57,108 @@ A production-grade Terraform project that provisions a 3-node Kubernetes cluster
 ```
 
 **Traffic flows:**
-- Admin → Control Plane: HTTPS (6443) + SSH (22) scoped to `my_ip` only
-- Control Plane ↔ Workers: private IPs only, via security group references
-- Workers → Internet: through NAT Gateway (no inbound from internet)
+- Admin to control plane: HTTPS (6443) and SSH (22) scoped to `my_ip` only
+- Control plane to workers: private IPs only, via security group reference
+- Workers to internet: through NAT Gateway (no inbound path from internet)
+- Platform UIs: NGINX Ingress on NodePort 30443, hostnames via nip.io
 
 ---
 
 ## Project Structure
 
 ```
-terraform/
-├── modules/
-│   ├── vpc/
-│   │   ├── main.tf          VPC, subnets, IGW, Elastic IP, NAT Gateway,
-│   │   │                    route tables, route table associations
-│   │   ├── variables.tf
-│   │   └── outputs.tf
-│   ├── security-groups/
-│   │   ├── main.tf          control-plane-sg, worker-sg and all scoped rules
-│   │   ├── variables.tf
-│   │   └── outputs.tf
-│   ├── ec2/
-│   │   ├── main.tf          Ubuntu 24.04 LTS AMI data source, control plane
-│   │   │                    instance, 2 worker instances (count = 2)
-│   │   ├── variables.tf
-│   │   └── outputs.tf
-│   └── iam/
-│       ├── main.tf          IAM role, AmazonSSMManagedInstanceCore,
-│       │                    minimal custom policy, instance profile
-│       ├── variables.tf
-│       └── outputs.tf
-└── environments/
-    └── dev/
-        ├── versions.tf      Terraform >= 1.6.0, AWS provider ~> 5.0
-        ├── providers.tf     AWS provider with default_tags block
-        ├── backend.tf       S3 + DynamoDB remote state configuration
-        ├── variables.tf     All input variable declarations with validation
-        ├── terraform.tfvars Variable values (edit before applying)
-        ├── main.tf          Module wiring
-        └── outputs.tf       All infrastructure outputs
+.
+├── terraform/
+│   ├── modules/
+│   │   ├── vpc/              VPC, subnets, IGW, Elastic IP, NAT Gateway, route tables
+│   │   ├── security-groups/  control-plane-sg + worker-sg (scoped ingress/egress rules)
+│   │   ├── ec2/              Ubuntu 24.04 LTS AMI, control plane + 2 worker instances
+│   │   └── iam/              IAM role, SSM policy, custom node policy, instance profile
+│   └── environments/
+│       └── dev/
+│           ├── versions.tf      Terraform >= 1.6.0, AWS provider ~> 5.0
+│           ├── providers.tf     AWS provider with default_tags
+│           ├── backend.tf       S3 + DynamoDB remote state
+│           ├── variables.tf     All input variable declarations
+│           ├── terraform.tfvars Variable values
+│           ├── main.tf          Module wiring
+│           └── outputs.tf       All infrastructure outputs
+│
+├── ansible-k8s-bootstrap/
+│   ├── ansible.cfg              SSH settings, privilege escalation, fact caching
+│   ├── site.yml                 14 plays in dependency order
+│   ├── requirements.yml         kubernetes.core collection (>= 3.0.0)
+│   ├── inventory/
+│   │   └── hosts.ini            Static inventory: masters + workers + consul_vm
+│   ├── group_vars/
+│   │   ├── all.yml              Shared vars: versions, CIDRs, hostnames, chart versions
+│   │   ├── masters.yml          Control-plane-specific vars
+│   │   └── workers.yml          ProxyJump config (workers in private subnet)
+│   └── roles/
+│       ├── common/              Swap off, kernel modules, sysctl, base packages
+│       ├── container_runtime/   containerd from Docker repo, SystemdCgroup=true
+│       ├── kubernetes_packages/ kubelet + kubeadm + kubectl, pinned versions
+│       ├── master/              kubeadm init, kubeconfig, join command
+│       ├── worker/              kubeadm join (reads command from master)
+│       ├── cni/                 Calico v3.29.1, waits for Ready nodes
+│       ├── metrics_server/      metrics-server + --kubelet-insecure-tls patch
+│       ├── helm/                Helm v3 binary + 6 chart repos
+│       ├── ingress_nginx/       NGINX Ingress NodePort 30080/30443
+│       ├── cert_manager/        cert-manager + self-signed ClusterIssuer
+│       ├── argocd/              ArgoCD + Ingress
+│       ├── monitoring/          kube-prometheus-stack (Prometheus + Grafana)
+│       ├── istio/               Istio base CRDs + istiod
+│       ├── consul/              Consul + Connect + ACLs + ServiceMonitor
+│       ├── sample_app/          Demo frontend/backend via Consul Connect
+│       └── consul_vm_agent/     Consul client agent for VM nodes (conditional)
+│
+└── gitops/
+    ├── consul/
+    │   ├── namespace.yaml       consul Namespace
+    │   ├── values.yaml          Consul Helm values (GitOps mode)
+    │   └── application.yaml     ArgoCD Application for Consul
+    └── sample_app/
+        ├── namespace.yaml       test-app Namespace
+        ├── backend.yaml         backend Deployment + ServiceAccount + Service
+        ├── frontend.yaml        frontend ConfigMap + Deployment + ServiceAccount + Service
+        └── application.yaml     ArgoCD Application for sample app
 ```
 
 ---
 
 ## Prerequisites
 
-| Requirement | Version / Notes |
-|-------------|-----------------|
-| [Terraform](https://developer.hashicorp.com/terraform/downloads) | >= 1.6.0 |
-| [AWS CLI](https://docs.aws.amazon.com/cli/latest/userguide/install-cliv2.html) | Configured with appropriate credentials |
-| AWS IAM permissions | EC2, VPC, IAM, S3, DynamoDB |
-| EC2 Key Pair | Must already exist in target region |
+| Requirement | Notes |
+|-------------|-------|
+| Terraform >= 1.6.0 | [Download](https://developer.hashicorp.com/terraform/downloads) |
+| AWS CLI | Configured with credentials that have EC2, VPC, IAM, S3, DynamoDB access |
+| EC2 Key Pair | Must already exist in the target region |
 | S3 bucket | For Terraform remote state (see bootstrap below) |
 | DynamoDB table | For state locking (see bootstrap below) |
+| Ansible >= 2.14 | `pip install ansible` |
+| Python kubernetes library | `pip install kubernetes` — or installed by the `helm` role |
 
 ---
 
-## Quick Start
+## Part 1 — Terraform: Provision Infrastructure
 
 ### 1. Bootstrap Remote State (one-time)
 
-The S3 bucket and DynamoDB table must exist before running `terraform init`. Run these AWS CLI commands once:
+The S3 bucket and DynamoDB table must exist before `terraform init`:
 
 ```bash
 REGION="ap-south-1"
-BUCKET="my-tf-state-bucket-rayyan"
-TABLE="my-tf-lock-table-rayyan"
+BUCKET="my-tf-state-bucket-example"
+TABLE="my-tf-lock-table-example"
 
-# S3 bucket
+# S3 bucket with versioning and encryption
 aws s3api create-bucket --bucket "$BUCKET" --region "$REGION" \
   --create-bucket-configuration LocationConstraint="$REGION"
-
 aws s3api put-bucket-versioning --bucket "$BUCKET" \
   --versioning-configuration Status=Enabled
-
 aws s3api put-bucket-encryption --bucket "$BUCKET" \
   --server-side-encryption-configuration \
   '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}'
-
 aws s3api put-public-access-block --bucket "$BUCKET" \
   --public-access-block-configuration \
   "BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true"
@@ -127,34 +172,20 @@ aws dynamodb create-table \
   --region "$REGION"
 ```
 
-### 2. Configure Backend
+### 2. Configure Variables
 
-Edit `terraform/environments/dev/backend.tf` and replace the placeholder values:
-
-```hcl
-terraform {
-  backend "s3" {
-    bucket         = "my-tf-state-bucket-rayyan"
-    key            = "dev/kubernetes/terraform.tfstate"
-    region         = "ap-south-1"
-    dynamodb_table = "my-tf-lock-table-rayyan"
-    encrypt        = true
-  }
-}
-```
-
-### 3. Configure Variables
-
-`terraform/environments/dev/terraform.tfvars` is already configured:
+`terraform/environments/dev/terraform.tfvars` is pre-filled for this project:
 
 ```hcl
 region            = "ap-south-1"
 availability_zone = "ap-south-1a"
 key_name          = "terraform-keypair"
-my_ip             = "203.190.146.202/32"
+my_ip             = "200.100.100.200/32"
 ```
 
-### 4. Deploy
+Update `my_ip` to your current IP before each apply if it changes.
+
+### 3. Deploy
 
 ```bash
 cd terraform/environments/dev
@@ -163,6 +194,24 @@ terraform init
 terraform plan
 terraform apply
 ```
+
+### 4. Get Outputs
+
+```bash
+terraform output control_plane_public_ip
+terraform output worker_private_ips
+```
+
+These values go into the Ansible inventory.
+
+### Destroy
+
+```bash
+cd terraform/environments/dev
+terraform destroy
+```
+
+> The S3 bucket and DynamoDB table are not managed by this configuration and must be removed manually if no longer needed.
 
 ---
 
@@ -174,8 +223,7 @@ terraform apply
 | Worker 1 | t3.large | 4 | 8 GB | 60 GB gp3 | Private (10.0.2.0/24) | None |
 | Worker 2 | t3.large | 4 | 8 GB | 60 GB gp3 | Private (10.0.2.0/24) | None |
 
-All instances run **Ubuntu 24.04 LTS** (latest available, sourced via data source).
-All EBS volumes are **encrypted** and type **gp3**.
+All instances run **Ubuntu 24.04 LTS**. All EBS volumes are **encrypted gp3**.
 
 ---
 
@@ -188,8 +236,8 @@ All EBS volumes are **encrypted** and type **gp3**.
 | Ingress | TCP | 22 | `my_ip` | SSH (admin only) |
 | Ingress | TCP | 6443 | `my_ip` | Kubernetes API (admin) |
 | Ingress | TCP | 6443 | worker-sg | Kubernetes API (kubelets) |
-| Ingress | TCP | 2379–2380 | worker-sg | etcd client + peer |
-| Ingress | TCP | 2379–2380 | self | etcd peer (future HA) |
+| Ingress | TCP | 2379-2380 | worker-sg | etcd client + peer |
+| Ingress | TCP | 2379-2380 | self | etcd peer (future HA) |
 | Ingress | TCP | 10250 | worker-sg | Kubelet API |
 | Ingress | TCP | 10257 | self | Controller Manager health |
 | Ingress | TCP | 10259 | self | Scheduler health |
@@ -205,24 +253,22 @@ All EBS volumes are **encrypted** and type **gp3**.
 |-----------|----------|---------|--------|---------|
 | Ingress | All | All | control-plane-sg | Full control plane access |
 | Ingress | All | All | self | Worker-to-worker (pod networking) |
-| Ingress | TCP | 30000–32767 | VPC CIDR | NodePort services (internal only) |
+| Ingress | TCP | 30000-32767 | VPC CIDR | NodePort services (internal) |
 | Ingress | TCP | 22 | control-plane-sg | SSH from control plane only |
 | Egress | All | All | 0.0.0.0/0 | Internet (via NAT Gateway) |
 
-> Workers have **no inbound path from the internet**. All worker internet egress routes through the NAT Gateway.
+> Workers have **no inbound path from the internet**. All worker egress routes through the NAT Gateway.
 
 ---
 
 ## IAM
 
-A single IAM role (`k8s-node-role`) is attached to all three EC2 instances via an instance profile. It grants:
+A single IAM role (`k8s-node-role`) is attached to all three instances via an instance profile:
 
 | Policy | Type | Purpose |
 |--------|------|---------|
-| `AmazonSSMManagedInstanceCore` | AWS Managed | SSM Session Manager — shell access without a bastion host |
+| `AmazonSSMManagedInstanceCore` | AWS Managed | SSM Session Manager access without a bastion |
 | `k8s-node-minimal` | Custom inline | `ec2:DescribeInstances`, `ec2:DescribeRegions` — node discovery |
-
-No S3, ECR, or other service permissions are granted. Follow least-privilege and extend only as required by your CNI or cloud-provider integration.
 
 ---
 
@@ -231,35 +277,16 @@ No S3, ECR, or other service permissions are granted. Follow least-privilege and
 | Control | Implementation |
 |---------|---------------|
 | IMDSv2 enforced | `http_tokens = "required"` on all instances — blocks SSRF metadata attacks |
-| No 0.0.0.0/0 inbound | All ingress rules use `my_ip` CIDR or security group references |
-| Workers not publicly reachable | Private subnet placement + no `associate_public_ip_address` |
+| No 0.0.0.0/0 inbound | All ingress rules use `my_ip` CIDR or SG references |
+| Workers not reachable from internet | Private subnet + no public IP |
 | Encrypted EBS volumes | `encrypted = true` on all root block devices |
 | State file encrypted | `encrypt = true` in backend + S3 SSE |
 | State file versioned | S3 bucket versioning enabled |
-| State locking | DynamoDB prevents concurrent `apply` runs |
-| Detailed monitoring | 1-minute CloudWatch metrics on all instances |
+| State locking | DynamoDB prevents concurrent apply runs |
 
 ---
 
-## Variables Reference
-
-| Variable | Type | Default | Description |
-|----------|------|---------|-------------|
-| `region` | string | `us-east-1` | AWS region (dev: `ap-south-1`) |
-| `environment` | string | — | Environment name (dev, staging, prod) |
-| `project_name` | string | — | Prefix for all resource names |
-| `vpc_cidr` | string | `10.0.0.0/16` | VPC CIDR block |
-| `public_subnet_cidr` | string | `10.0.1.0/24` | Public subnet CIDR |
-| `private_subnet_cidr` | string | `10.0.2.0/24` | Private subnet CIDR |
-| `availability_zone` | string | `us-east-1a` | AZ for both subnets (dev: `ap-south-1a`) |
-| `instance_type_control_plane` | string | `t3.medium` | Control plane instance type |
-| `instance_type_worker` | string | `t3.large` | Worker node instance type |
-| `key_name` | string | — | **Required.** EC2 key pair name |
-| `my_ip` | string | — | **Required.** Admin IP in CIDR notation |
-
----
-
-## Outputs Reference
+## Terraform Outputs Reference
 
 | Output | Description |
 |--------|-------------|
@@ -267,152 +294,33 @@ No S3, ECR, or other service permissions are granted. Follow least-privilege and
 | `control_plane_private_ip` | Private IP — internal cluster communication |
 | `control_plane_instance_id` | EC2 instance ID |
 | `control_plane_ssh_command` | Ready-to-use SSH command |
-| `worker_private_ips` | List of worker node private IPs |
+| `worker_private_ips` | List of worker private IPs |
 | `worker_instance_ids` | List of worker EC2 instance IDs |
 | `vpc_id` | VPC ID |
 | `public_subnet_id` | Public subnet ID |
 | `private_subnet_id` | Private subnet ID |
 | `nat_gateway_public_ip` | NAT Gateway IP — worker egress source IP |
-| `iam_role_arn` | IAM role ARN for all nodes |
+| `iam_role_arn` | IAM role ARN |
 | `iam_instance_profile_name` | Instance profile name |
 
 ---
 
-## Connecting to Nodes
+## Part 2 — Ansible: Cluster Bootstrap and Platform
 
-**Control Plane (direct SSH):**
-```bash
-ssh -i ~/.ssh/<key_name>.pem ubuntu@<control_plane_public_ip>
-```
-
-**Worker Nodes (via control plane jump host):**
-```bash
-ssh -i ~/.ssh/<key_name>.pem -J ubuntu@<control_plane_public_ip> ubuntu@<worker_private_ip>
-```
-
-**Via SSM Session Manager (no SSH key required):**
-```bash
-aws ssm start-session --target <instance_id> --region ap-south-1
-```
-
----
-
-## Multi-Environment Expansion
-
-To add a `staging` or `prod` environment, copy the `dev` directory and update the values:
+### Setup
 
 ```bash
-cp -r terraform/environments/dev terraform/environments/staging
-```
-
-Then update `terraform/environments/staging/terraform.tfvars`:
-```hcl
-environment  = "staging"
-key_name     = "staging-keypair"
-my_ip        = "..."
-```
-
-And update `terraform/environments/staging/backend.tf`:
-```hcl
-key = "staging/kubernetes/terraform.tfstate"   # unique state path per env
-```
-
-All modules are fully parameterized — no changes to module code required.
-
----
-
-## Destroying the Infrastructure
-
-```bash
-cd terraform/environments/dev
-terraform destroy
-```
-
-> The S3 bucket and DynamoDB table are **not managed by this Terraform configuration** and will not be destroyed. Remove them manually if no longer needed.
-
----
-
-## Repository Hygiene
-
-A `.gitignore` is included at the project root covering:
-
-- **`.terraform/`** — provider binaries and cached modules (re-downloaded on `terraform init`)
-- **`*.tfstate`, `*.tfstate.*`** — state files are stored remotely in S3; never commit locally
-- **`*.tfplan`** — plan output may contain sensitive resource values
-- **`*.pem`, `*.key`, `.env`** — credentials and private keys
-- **`terraform.tfvars`** is intentionally **committed** — it contains no secrets in this project. If you add sensitive values, add `*.tfvars` to `.gitignore`.
-- **`.terraform.lock.hcl`** is intentionally **not ignored** — commit it to pin provider versions across the team.
-
----
-
-## Ansible — Kubernetes Bootstrap
-
-The `ansible-k8s-bootstrap/` directory contains a fully modular, idempotent Ansible project that installs and configures a kubeadm-based Kubernetes cluster on the EC2 instances provisioned by Terraform.
-
-### Ansible Project Structure
-
-```
-ansible-k8s-bootstrap/
-├── ansible.cfg                  SSH settings, privilege escalation, fact caching
-├── site.yml                     Orchestration — 14 plays in dependency order
-├── requirements.yml             Collection dependencies (kubernetes.core)
-├── inventory/
-│   └── hosts.ini                Static inventory (masters + workers + consul_vm)
-├── group_vars/
-│   ├── all.yml                  Shared vars: k8s version, CIDRs, chart versions
-│   ├── masters.yml              Control-plane-specific vars
-│   └── workers.yml              ProxyJump config (workers in private subnet)
-├── roles/
-│   ├── common/                  Swap, kernel modules, sysctl, base packages
-│   ├── container_runtime/       containerd from Docker repo, SystemdCgroup=true
-│   ├── kubernetes_packages/     kubelet + kubeadm + kubectl, held versions
-│   ├── master/                  kubeadm init, kubeconfig, join command
-│   ├── worker/                  kubeadm join (reads command from master)
-│   ├── cni/                     Calico v3.29.1 manifest, waits for Ready nodes
-│   ├── metrics_server/          metrics-server + --kubelet-insecure-tls patch
-│   ├── helm/                    Helm v3 binary + chart repos (incl. hashicorp + istio)
-│   ├── ingress_nginx/           NGINX Ingress Controller (NodePort 30080/30443)
-│   ├── cert_manager/            cert-manager + self-signed ClusterIssuer
-│   ├── argocd/                  ArgoCD GitOps platform + Ingress
-│   ├── monitoring/              kube-prometheus-stack (Prometheus + Grafana)
-│   ├── istio/                   Istio service mesh (base CRDs + istiod)
-│   ├── consul/                  Consul service discovery + Connect mesh
-│   ├── sample_app/              Demo app: frontend + backend via Consul Connect
-│   └── consul_vm_agent/         Consul client agent for VM/bare-metal nodes
-└── gitops/
-    └── consul/
-        ├── namespace.yaml       consul Namespace manifest
-        ├── values.yaml          Consul Helm values (GitOps mode)
-        └── application.yaml     ArgoCD Application pointing to this repo
-```
-
-### Prerequisites
-
-```bash
-# Install Ansible (>= 2.14 recommended)
+# Install Ansible
 pip install ansible
 
-# Install required Ansible collections (kubernetes.core — needed for platform plays)
+# Install required Ansible collections
 cd ansible-k8s-bootstrap
 ansible-galaxy collection install -r requirements.yml
-
-# Verify SSH key is loaded (needed for ProxyJump through master to workers)
-ssh-add ~/.ssh/terraform-keypair.pem
-ssh-add -l
 ```
 
 ### Configure Inventory
 
-Fill in the real IPs from Terraform outputs:
-
-```bash
-# Get values
-cd terraform/environments/dev
-terraform output control_plane_public_ip
-terraform output worker_private_ips
-```
-
-Edit `ansible-k8s-bootstrap/inventory/hosts.ini`:
+Update `ansible-k8s-bootstrap/inventory/hosts.ini` with the IPs from Terraform:
 
 ```ini
 [masters]
@@ -421,33 +329,45 @@ control-plane ansible_host=<MASTER_PUBLIC_IP> ansible_user=ubuntu
 [workers]
 worker1 ansible_host=<WORKER1_PRIVATE_IP> ansible_user=ubuntu
 worker2 ansible_host=<WORKER2_PRIVATE_IP> ansible_user=ubuntu
+
+[consul_vm]
+# Leave empty to skip the consul_vm_agent play.
+# Add VM hosts here to install the Consul client agent.
 ```
 
-### WSL + Windows Filesystem Setup
+### SSH Key Setup
 
-If running from WSL with the project on the Windows filesystem (`/mnt/c/...`), two extra steps are required:
-
-**1. Copy the PEM key to the WSL filesystem** — NTFS cannot enforce `chmod 400`, which SSH requires:
-
-```bash
-cp "/mnt/c/Users/rayyan/Desktop/Project/AWS Private Kubernetes Foundation/terraform-keypair.pem" \
-   ~/.ssh/terraform-keypair.pem
-chmod 400 ~/.ssh/terraform-keypair.pem
-```
-
-**2. Set `ANSIBLE_CONFIG`** — Ansible ignores `ansible.cfg` in world-writable directories (all of `/mnt/c/` appears 777 in WSL). The env variable bypasses this check:
-
-```bash
-export ANSIBLE_CONFIG="/mnt/c/Users/rayyan/Desktop/Project/AWS Private Kubernetes Foundation/ansible-k8s-bootstrap/ansible.cfg"
-# Persist it:
-echo 'export ANSIBLE_CONFIG="..."' >> ~/.bashrc
-```
-
-**3. Load the SSH key into the agent** — required for ProxyJump to workers:
+Load the SSH key into the agent before running the playbook. Ansible uses agent forwarding to reach the private-subnet workers via ProxyJump through the control plane:
 
 ```bash
 eval "$(ssh-agent -s)"
 ssh-add ~/.ssh/terraform-keypair.pem
+ssh-add -l   # confirm key is loaded
+```
+
+If the cluster was rebuilt and SSH shows a host key mismatch, clear old keys:
+```bash
+ssh-keygen -R <MASTER_PUBLIC_IP>
+```
+
+### WSL + Windows Filesystem Note
+
+If running Ansible from WSL with the project on the Windows filesystem (`/mnt/c/...`), Ansible will silently ignore `ansible.cfg` because NTFS directories appear world-writable (mode 777) in WSL, and Ansible refuses world-writable config files for security reasons.
+
+**Fix — copy `ansible.cfg` to your WSL home directory:**
+
+```bash
+cp "/mnt/c/Users/rayyan/Desktop/Project/AWS Private Kubernetes Foundation/ansible-k8s-bootstrap/ansible.cfg" \
+   ~/.ansible.cfg
+```
+
+Ansible always checks `~/.ansible.cfg` regardless of filesystem permissions. No environment variable is needed.
+
+Also copy the PEM key to the WSL filesystem so SSH can enforce the required `600` permissions:
+
+```bash
+cp "/mnt/c/Users/rayyan/.ssh/terraform-keypair.pem" ~/.ssh/terraform-keypair.pem
+chmod 600 ~/.ssh/terraform-keypair.pem
 ```
 
 ### Run the Playbook
@@ -458,187 +378,186 @@ cd ansible-k8s-bootstrap
 # Test connectivity first
 ansible all -i inventory/hosts.ini -m ping
 
-# Dry run
-ansible-playbook -i inventory/hosts.ini site.yml --check
-
-# Full deployment — cluster bootstrap + platform stack (~20-25 minutes)
+# Full deployment: cluster bootstrap + complete platform stack (~25-30 min)
 ansible-playbook -i inventory/hosts.ini site.yml
 
-# Platform plays only (cluster must already exist):
+# Platform plays only (cluster must already exist, plays 6-14):
 ansible-playbook -i inventory/hosts.ini site.yml --tags platform
 
-# Consul + Istio stack only (platform plays 1-12 must already have run):
+# Consul + Istio stack only (platform must already exist, plays 11-14):
 ansible-playbook -i inventory/hosts.ini site.yml --tags consul-stack
 ```
 
 ### Validate the Cluster
 
-SSH to the control plane after the playbook completes:
-
 ```bash
 ssh -i ~/.ssh/terraform-keypair.pem ubuntu@<MASTER_PUBLIC_IP>
 
-# All 3 nodes Ready
-kubectl get nodes -o wide
-
-# Calico pods running
-kubectl get pods -n kube-system
-
-# Metrics working
-kubectl top nodes
+kubectl get nodes -o wide       # all 3 nodes Ready
+kubectl get pods -n kube-system # Calico + coredns running
+kubectl top nodes               # Metrics Server working
 ```
 
-### Platform Stack Access
+---
 
-After the full playbook completes, the following tools are accessible using the master node's **public IP** in place of `<MASTER_PUBLIC_IP>`. Hostnames resolve via [nip.io](https://nip.io) — no DNS configuration needed.
+## Platform Access
+
+After the full playbook completes, services are available at these URLs. Hostnames resolve via [nip.io](https://nip.io) — no DNS setup needed. Replace `<MASTER_IP>` with the control plane's public IP.
 
 | Service | URL | Credentials |
 |---------|-----|-------------|
-| ArgoCD | `https://argocd.<MASTER_PUBLIC_IP>.nip.io:30443` | admin / (printed by playbook) |
-| Grafana | `https://grafana.<MASTER_PUBLIC_IP>.nip.io:30443` | admin / prom-operator |
-| Consul UI | `https://consul.<MASTER_PUBLIC_IP>.nip.io:30443` | ACL token (printed by playbook) |
-| NGINX Ingress HTTP | `http://<MASTER_PUBLIC_IP>:30080` | — |
-| NGINX Ingress HTTPS | `https://<MASTER_PUBLIC_IP>:30443` | — |
+| ArgoCD | `https://argocd.<MASTER_IP>.nip.io:30443` | `admin` / printed by playbook |
+| Grafana | `https://grafana.<MASTER_IP>.nip.io:30443` | `admin` / `prom-operator` |
+| Consul UI | `https://consul.<MASTER_IP>.nip.io:30443` | ACL token printed by playbook |
+| NGINX HTTP | `http://<MASTER_IP>:30080` | — |
+| NGINX HTTPS | `https://<MASTER_IP>:30443` | — |
 
-> TLS certificates are self-signed. Browsers will show a security warning — click "Advanced" and proceed. This is expected for a lab with a self-signed ClusterIssuer.
+> Certificates are self-signed. Browsers will warn — click "Advanced" and proceed. Expected behaviour for a lab ClusterIssuer.
 
-> The ArgoCD initial admin password is printed by the playbook as a `debug` task. It can also be retrieved manually:
-> ```bash
-> kubectl -n argocd get secret argocd-initial-admin-secret \
->   -o jsonpath='{.data.password}' | base64 -d
-> ```
+**Retrieve credentials manually:**
 
-> The Consul bootstrap ACL token is printed by the consul role. It can also be retrieved manually:
-> ```bash
-> kubectl -n consul get secret consul-bootstrap-acl-token \
->   -o jsonpath='{.data.token}' | base64 -d
-> ```
+```bash
+# ArgoCD admin password
+kubectl -n argocd get secret argocd-initial-admin-secret \
+  -o jsonpath='{.data.password}' | base64 -d
 
-### Role Responsibilities
+# Consul bootstrap ACL token
+kubectl -n consul get secret consul-bootstrap-acl-token \
+  -o jsonpath='{.data.token}' | base64 -d
+```
 
-| Role | Runs On | Key Actions |
-|------|---------|-------------|
-| `common` | All nodes | Disable swap, load `overlay`+`br_netfilter`, configure sysctl, install base packages |
-| `container_runtime` | All nodes | Install `containerd.io` from Docker repo, set `SystemdCgroup=true`, validate service |
-| `kubernetes_packages` | All nodes | Add `pkgs.k8s.io` repo, install and hold `kubelet`/`kubeadm`/`kubectl` |
-| `master` | Control plane | `kubeadm init` (idempotent), set up kubeconfig, generate join command |
-| `worker` | Workers | Fetch join command from master via `slurp`, run `kubeadm join` (idempotent) |
-| `cni` | Control plane | Apply Calico manifest, wait for all nodes `Ready` |
-| `metrics_server` | Control plane | Apply manifest, patch `--kubelet-insecure-tls`, verify `kubectl top nodes` |
-| `helm` | Control plane | Install Helm v3 binary, install `python3-kubernetes`, add 6 chart repositories |
-| `ingress_nginx` | Control plane | Install NGINX Ingress via Helm, NodePort 30080/30443, metrics ServiceMonitor enabled |
-| `cert_manager` | Control plane | Install cert-manager via Helm (with CRDs), create self-signed ClusterIssuer |
-| `argocd` | Control plane | Install ArgoCD via Helm (insecure mode), apply Ingress, print admin password |
-| `monitoring` | Control plane | Install kube-prometheus-stack via Helm, apply Grafana Ingress |
-| `istio` | Control plane | Install istio-base (CRDs) + istiod via Helm; no Ingress Gateway (NGINX handles edge) |
-| `consul` | Control plane | Install local-path-provisioner, install Consul via Helm (or ArgoCD in GitOps mode), apply Ingress + ServiceMonitor + Grafana dashboard, print ACL token |
-| `sample_app` | Control plane | Deploy frontend + backend in `test-app` namespace with Consul Connect sidecar injection |
-| `consul_vm_agent` | consul_vm hosts | Install Consul binary, configure client agent, register `legacy-api` service; skipped if `[consul_vm]` group is empty |
+---
 
-### Idempotency Design
+## Role Reference
 
-| Concern | Guard Mechanism |
-|---------|----------------|
-| kubeadm init reruns | `stat /etc/kubernetes/admin.conf` |
-| Worker rejoins cluster | `stat /etc/kubernetes/kubelet.conf` |
-| containerd config regenerated | `grep io.containerd.grpc.v1.cri` — regenerate only if CRI section absent |
-| GPG keys re-dearmored | `args: creates:` on shell task |
-| metrics-server double-patched | `when: 'kubelet-insecure-tls' not in ms_args.stdout` |
-| sysctl double-applied | Handler fires only when `/etc/sysctl.d/k8s.conf` changes |
-| Helm binary reinstalled | `helm version --short` — skip install if already at requested version |
-| Helm chart re-deployed | `kubernetes.core.helm` performs `helm upgrade --install` — safe to re-run |
-| ClusterIssuer re-applied | `kubernetes.core.k8s` with `state: present` — no-op if object unchanged |
-| Ingress objects re-applied | `kubernetes.core.k8s` with `state: present` — no-op if object unchanged |
-| ArgoCD admin secret missing | `failed_when: false` — soft-fail if secret was deleted after first login |
-| local-path StorageClass re-install | `kubernetes.core.k8s_info` check — skip install if StorageClass already exists |
-| Consul ACL token missing | `failed_when: false` — soft-fail if bootstrap secret not yet available |
-| Consul StatefulSet wait | `kubectl rollout status statefulset/consul-server` — read-only, always re-checked |
+| Play | Role | Runs On | What It Does |
+|------|------|---------|--------------|
+| 1 | `common` | All nodes | Disable swap, load `overlay`+`br_netfilter`, configure sysctl, install base packages |
+| 1 | `container_runtime` | All nodes | Install `containerd.io` from Docker repo, set `SystemdCgroup=true`, validate service |
+| 1 | `kubernetes_packages` | All nodes | Add `pkgs.k8s.io` repo, install and hold `kubelet`/`kubeadm`/`kubectl` 1.32 |
+| 2 | `master` | Control plane | `kubeadm init`, set up kubeconfig, generate join command |
+| 3 | `worker` | Workers | Fetch join command from master, run `kubeadm join` |
+| 4 | `cni` | Control plane | Apply Calico v3.29.1, wait for all nodes `Ready` |
+| 5 | `metrics_server` | Control plane | Apply manifest, patch `--kubelet-insecure-tls`, verify `kubectl top nodes` |
+| 6 | `helm` | Control plane | Install Helm v3.17.0, install `python3-kubernetes`, add chart repos |
+| 7 | `ingress_nginx` | Control plane | NGINX Ingress via Helm, NodePort 30080/30443, Prometheus ServiceMonitor |
+| 8 | `cert_manager` | Control plane | cert-manager via Helm (CRDs), create self-signed `selfsigned-issuer` ClusterIssuer |
+| 9 | `argocd` | Control plane | ArgoCD via Helm (insecure mode, NGINX does TLS), apply Ingress, print admin password |
+| 10 | `monitoring` | Control plane | kube-prometheus-stack via Helm, apply Grafana Ingress |
+| 11 | `istio` | Control plane | istio-base (CRDs) + istiod via Helm; no Ingress Gateway |
+| 12 | `consul` | Control plane | local-path-provisioner, Consul via Helm, Ingress + ServiceMonitor + Grafana dashboard, print ACL token |
+| 13 | `sample_app` | Control plane | frontend + backend in `test-app` namespace with Consul Connect injection |
+| 14 | `consul_vm_agent` | consul_vm hosts | Install Consul binary, configure client agent, register `legacy-api` service; **skipped automatically if `[consul_vm]` group is empty** |
 
-### Istio Service Mesh
+---
 
-Istio is installed in **platform-wide** mode. Sidecar injection is opt-in per namespace via label:
+## Istio Service Mesh
+
+Istio is installed in platform-wide mode. Sidecar injection is **opt-in per namespace**:
 
 ```bash
 # Enable Istio sidecar injection in a namespace
 kubectl label namespace <namespace> istio-injection=enabled
 
-# Verify istiod is running
+# Verify istiod
 kubectl get pods -n istio-system
 ```
 
-**Important:** The `consul` and `test-app` namespaces have `istio-injection: disabled` to avoid dual-proxy conflicts with Consul Connect. Each namespace uses **one** mesh layer:
+**Namespace mesh assignment:**
 
-| Namespace | Mesh Layer |
-|-----------|-----------|
-| `istio-system` | Istio control plane |
-| `consul` | Consul Connect (Istio disabled) |
-| `test-app` | Consul Connect (Istio disabled) |
-| All others | Istio (opt-in via label) |
+| Namespace | Mesh | Reason |
+|-----------|------|--------|
+| `istio-system` | Istio control plane | — |
+| `consul` | Consul Connect (Istio disabled) | Dual-proxy conflict avoided |
+| `test-app` | Consul Connect (Istio disabled) | Demo uses Consul Connect |
+| All others | Istio (opt-in via label) | Clean separation |
 
 No Istio Ingress Gateway is installed — NGINX Ingress handles all edge TLS termination.
 
 ---
 
-### Consul Service Discovery and Service Mesh
+## Consul Service Discovery and Connect Mesh
 
-Consul runs as a 3-replica StatefulSet in the `consul` namespace. Features enabled:
+Consul runs as a 3-replica StatefulSet in the `consul` namespace with:
 
-- **Service discovery**: automatic registration of Kubernetes services
-- **Connect service mesh**: Envoy sidecar injection opt-in per pod
-- **ACLs**: bootstrap token auto-created, displayed by playbook
-- **UI**: exposed via NGINX Ingress at `https://consul.<IP>.nip.io:30443`
+- **Service discovery**: Kubernetes services automatically registered
+- **Connect service mesh**: Envoy sidecar injection, opt-in per pod
+- **ACLs**: bootstrap token auto-created by the Helm chart, printed by the playbook
+- **UI**: exposed at `https://consul.<MASTER_IP>.nip.io:30443`
 - **Metrics**: Prometheus ServiceMonitor + Grafana dashboard auto-imported
+- **Storage**: `local-path` StorageClass (Rancher local-path-provisioner, installed as a prerequisite)
 
-**Storage**: Rancher `local-path-provisioner` (installed as a prerequisite) provides the `local-path` StorageClass using node-local disk. No AWS EBS configuration required.
+### Enabling Consul Connect on a Pod
 
-**Consul Connect opt-in** — add these annotations to any pod spec:
+Add annotations to the pod spec and give the pod a dedicated ServiceAccount whose name matches the intended Consul service name. The ACL binding rule derives the Consul service name from the Kubernetes ServiceAccount name — they must match:
 
 ```yaml
-annotations:
-  consul.hashicorp.com/connect-inject: "true"
-  consul.hashicorp.com/service-name: my-service
-  consul.hashicorp.com/service-port: "8080"
-  # Optional: upstream service accessible at localhost:<port>
-  consul.hashicorp.com/connect-service-upstreams: "other-service:9090"
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: my-service      # <-- must match Consul service name
+  namespace: my-namespace
+---
+apiVersion: apps/v1
+kind: Deployment
+spec:
+  template:
+    metadata:
+      annotations:
+        consul.hashicorp.com/connect-inject: "true"
+        consul.hashicorp.com/service-port: "8080"
+        # Optional: expose an upstream at localhost:<port> via Consul Connect
+        consul.hashicorp.com/connect-service-upstreams: "other-service:9090"
+    spec:
+      serviceAccountName: my-service   # <-- must match ServiceAccount name above
 ```
 
-**GitOps mode** — set `consul_gitops_mode: true` in `group_vars/all.yml` to have ArgoCD manage the Consul Helm release instead of Ansible installing it directly. See [GitOps Setup](#gitops-setup) below.
+Do **not** set `consul.hashicorp.com/service-name` — the injector derives it from the ServiceAccount. Setting it to a different value will cause an ACL permission error in the init container.
+
+### GitOps Mode
+
+Set `consul_gitops_mode: true` in `group_vars/all.yml` to have ArgoCD manage the Consul Helm release instead of Ansible installing it directly. See [GitOps Setup](#gitops-setup) below.
 
 ---
 
-### Sample Application (Consul Connect Demo)
+## Sample Application (Consul Connect Demo)
 
-A two-tier demo app is deployed in the `test-app` namespace:
+A two-tier demo is deployed in the `test-app` namespace:
 
 ```
-[frontend (nginx)] --Consul Connect--> [backend (http-echo)]
-  port 80                                port 9090
+[frontend (nginx:1.27-alpine)]  --Consul Connect-->  [backend (http-echo:0.2.3)]
+       port 80                                               port 9090
+  ServiceAccount: frontend                          ServiceAccount: backend
 ```
 
-- **backend**: `hashicorp/http-echo:0.2.3` — returns a JSON response
-- **frontend**: `nginx:1.27-alpine` — proxies `/api/` to `localhost:9090` (Consul upstream)
+- **backend**: echoes a JSON response at port 9090
+- **frontend**: nginx proxies `/api/` to `localhost:9090` — routed via the Consul Connect sidecar upstream, not direct pod-to-pod networking
 
-Each pod runs 3 containers: the app + consul-proxy sidecar + consul-init init container.
+Each pod runs 3 containers: the application, a Consul Envoy proxy sidecar, and a Consul init container that performs ACL login on startup.
 
-Verify after deployment:
+**Verify after deployment:**
 
 ```bash
-# Check pods — expect 3 containers per pod
+# Check pods — expect 3 containers each (app + consul-proxy + consul-init)
 kubectl get pods -n test-app
 
-# Port-forward to frontend and test the proxy path
-kubectl port-forward -n test-app deploy/frontend 8080:80
+# Test backend directly
+kubectl port-forward -n test-app deploy/backend 9090:9090 &
+curl http://localhost:9090
+
+# Test frontend proxy path (through Consul Connect upstream)
+kubectl port-forward -n test-app deploy/frontend 8080:80 &
 curl http://localhost:8080/api/
 
-# Check Consul UI — both services should show passing health checks
-open https://consul.<MASTER_PUBLIC_IP>.nip.io:30443
+# Consul UI — both services should show passing health checks
+# https://consul.<MASTER_IP>.nip.io:30443
 ```
 
 ---
 
-### GitOps Setup
+## GitOps Setup
 
-The `gitops/consul/` directory contains pre-rendered manifests for ArgoCD to manage Consul.
+The `gitops/` directory contains pre-rendered manifests for ArgoCD to manage Consul and the sample app.
 
 **To activate GitOps mode:**
 
@@ -648,10 +567,9 @@ The `gitops/consul/` directory contains pre-rendered manifests for ArgoCD to man
    git push -u origin main
    ```
 
-2. Update `gitops/consul/application.yaml` and `gitops/sample_app/application.yaml` — replace the `repoURL` placeholder:
-   ```yaml
-   repoURL: https://github.com/<your-username>/aws-k8s-foundation
-   ```
+2. Update the `repoURL` in both ArgoCD Application manifests:
+   - `gitops/consul/application.yaml`
+   - `gitops/sample_app/application.yaml`
 
 3. Update `group_vars/all.yml`:
    ```yaml
@@ -662,91 +580,141 @@ The `gitops/consul/` directory contains pre-rendered manifests for ArgoCD to man
    sample_app_gitops_repo_url: "https://github.com/<your-username>/aws-k8s-foundation"
    ```
 
-4. Run the consul-stack plays:
+4. Re-run the consul-stack plays:
    ```bash
    ansible-playbook -i inventory/hosts.ini site.yml --tags consul-stack
    ```
 
-ArgoCD will sync the Consul Helm release from `gitops/consul/values.yaml` and the sample app from `gitops/sample_app/` and self-heal on drift.
+In GitOps mode, Ansible creates the namespace and the ArgoCD Application object only. ArgoCD then pulls and reconciles the manifests from the repo on every commit, self-healing any drift.
 
-**GitOps directory layout:**
+---
 
+## Idempotency Reference
+
+| Concern | Guard Mechanism |
+|---------|----------------|
+| kubeadm init reruns | `stat /etc/kubernetes/admin.conf` |
+| Worker rejoins cluster | `stat /etc/kubernetes/kubelet.conf` |
+| containerd config regenerated | Content check: grep for `io.containerd.grpc.v1.cri`, regenerate only if CRI section absent |
+| GPG keys re-dearmored | `args: creates:` on shell task |
+| metrics-server double-patched | `when: 'kubelet-insecure-tls' not in ms_args.stdout` |
+| sysctl double-applied | Handler fires only when `/etc/sysctl.d/k8s.conf` changes |
+| Helm binary reinstalled | `helm version --short` check — skip if already at target version |
+| Helm chart re-deployed | `kubernetes.core.helm` runs `helm upgrade --install` — safe to re-run |
+| Kubernetes objects re-applied | `kubernetes.core.k8s state: present` — no-op if object unchanged |
+| local-path StorageClass re-install | `kubernetes.core.k8s_info` check — skip if StorageClass exists |
+| ArgoCD admin secret missing | `failed_when: false` — soft-fail if deleted after first login |
+| Consul ACL token missing | `failed_when: false` — soft-fail if secret not yet available |
+| Consul StatefulSet wait | `kubectl rollout status statefulset/consul-server` — always re-checked, read-only |
+
+---
+
+## Connecting to Nodes
+
+**Control Plane:**
+```bash
+ssh -i ~/.ssh/terraform-keypair.pem ubuntu@<MASTER_PUBLIC_IP>
 ```
-gitops/
-├── consul/
-│   ├── namespace.yaml       consul Namespace
-│   ├── values.yaml          Consul Helm values
-│   └── application.yaml     ArgoCD Application for Consul
-└── sample_app/
-    ├── namespace.yaml        test-app Namespace
-    ├── backend.yaml          backend Deployment + Service
-    ├── frontend.yaml         frontend ConfigMap + Deployment + Service
-    └── application.yaml      ArgoCD Application for sample app
+
+**Workers (via ProxyJump through control plane):**
+```bash
+ssh -i ~/.ssh/terraform-keypair.pem \
+  -J ubuntu@<MASTER_PUBLIC_IP> \
+  ubuntu@<WORKER_PRIVATE_IP>
+```
+
+`group_vars/workers.yml` configures ProxyJump automatically for Ansible — no manual tunnels needed.
+
+**Via SSM Session Manager (no SSH key required):**
+```bash
+aws ssm start-session --target <instance_id> --region ap-south-1
 ```
 
 ---
 
-### Private Subnet SSH Access
+## Multi-Environment Expansion
 
-Workers have no public IP. `group_vars/workers.yml` configures a `ProxyJump` through the control plane for all worker SSH connections — no manual tunnel or bastion setup needed:
-
-```yaml
-ansible_ssh_common_args: >-
-  -o ProxyJump=ubuntu@{{ hostvars[groups['masters'][0]]['ansible_host'] }}
+```bash
+cp -r terraform/environments/dev terraform/environments/staging
 ```
+
+Update `terraform.tfvars` and `backend.tf` in the new environment directory. All modules are fully parameterized — no module code changes required.
 
 ---
 
-## Known Issues & Notes
+## Known Issues and Design Notes
 
 ### containerd CRI plugin missing after install
 
-The Docker `containerd.io` package ships `/etc/containerd/config.toml` pre-populated with only `disabled_plugins = ["cri"]`. A file-existence guard (`creates:`) would skip `containerd config default`, leaving containerd without a CRI configuration. kubeadm then fails with:
+The Docker `containerd.io` package ships `/etc/containerd/config.toml` pre-populated with `disabled_plugins = ["cri"]`. Using a file-existence guard (`creates:`) to skip config generation would leave containerd without a CRI section, causing kubeadm to fail with:
 
 ```
 rpc error: code = Unimplemented desc = unknown service runtime.v1.RuntimeService
 ```
 
-**Fix**: the `container_runtime` role uses a content-based check — it greps for the CRI plugin section (`io.containerd.grpc.v1.cri`) and regenerates the config if absent, regardless of whether the file exists.
+The `container_runtime` role uses a content-based check: it greps for `io.containerd.grpc.v1.cri` and regenerates the config if the CRI section is absent, regardless of whether the file exists.
 
 ### kubeadm hostname preflight warning
 
-kubeadm validates that `--node-name` resolves locally. The EC2 hostname is `ip-10-x-x-x`, not the Ansible inventory alias (`control-plane`). The `master` role adds `127.0.1.1 control-plane` to `/etc/hosts` before `kubeadm init` to satisfy the check without altering the system hostname.
+kubeadm validates that `--node-name` resolves locally. The EC2 hostname is `ip-10-x-x-x`, not the inventory alias `control-plane`. The `master` role adds `127.0.1.1 control-plane` to `/etc/hosts` before `kubeadm init` to satisfy the check without changing the system hostname.
 
-### AWS description field charset restrictions
+### Consul ACL init job is TTL-deleted
 
-IAM role descriptions must match `[\u0009\u000A\u000D\u0020-\u007E\u00A1-\u00FF]*` — em-dashes (`—`, U+2014) are above U+00FF and rejected. Security group rule descriptions are even more restricted: `a-zA-Z0-9. _-:/()#,@[]+=&;{}!$*` — this excludes `>`, `<`, `→`, and em-dashes. All descriptions in this project use plain ASCII hyphens (`-`) and the word `to` in place of any arrow.
+Consul Helm 1.x sets `ttlSecondsAfterFinished` on the `consul-server-acl-init` Job. The job is garbage-collected immediately after it completes, so `kubectl wait job/consul-server-acl-init` returns "not found" on every re-run after the first.
 
-### Consul Connect pod init container timeout
+The `consul` role waits on the `consul-bootstrap-acl-token` Secret instead (`until/retries`). This Secret is created as a durable side-effect of the bootstrap process and persists indefinitely. The `sample_app` role uses the same Secret as its ACL readiness pre-flight.
 
-When `consul.hashicorp.com/connect-inject: "true"` is set on a pod, the Consul webhook injects an init container (`consul-connect-inject-init`) that performs a `consul login` using the pod's Kubernetes service account JWT. This call hits the Consul ACL HTTP endpoint and requires the **Kubernetes auth method** to be registered in Consul's ACL system.
+### Consul Connect init container requires matching ServiceAccount
 
-The Kubernetes auth method is set up by the `consul-server-acl-init` Job, which runs asynchronously after the StatefulSet servers start. Waiting for the `consul-connect-injector` deployment to become `Available` is **not sufficient** — the injector can be running as a Kubernetes webhook before Consul's ACL auth method is fully registered, meaning injected pod init containers will still fail with HTTP 403.
+When `consul.hashicorp.com/connect-inject: "true"` is set on a pod, Consul injects an init container that performs `consul login` using the pod's Kubernetes service account JWT. The `consul-k8s-auth-method` ACL binding rule uses:
 
-**Root cause (confirmed via init container logs)**: `ACL auth method login failed: rpc error: code = PermissionDenied`. The `consul-k8s-auth-method` binding rule uses `BindType: service` with `BindName: "${serviceaccount.name}"`. A pod running as the `default` ServiceAccount gets a Consul token scoped to service "default" — when the init container then tries to register the pod as "backend", the token lacks write access to the "backend" catalog entry and the login fails with "Permission denied".
+```
+BindType: service
+BindName: "${serviceaccount.name}"
+```
 
-**Fix**: each pod is given a dedicated ServiceAccount whose name matches the Consul service name. The `backend` ServiceAccount produces a Consul token scoped to the "backend" service; `frontend` produces a token scoped to "frontend". The `consul.hashicorp.com/service-name` annotation is removed — the service name is derived from the ServiceAccount name by the injector.
+A pod running as the `default` ServiceAccount gets a Consul token scoped to the service named "default". If the init container then tries to register the pod under a different service name, the ACL login fails with `PermissionDenied`.
 
-For the ACL wait sequencing: the `consul` role polls for the `consul-bootstrap-acl-token` Secret (using `until/retries`) rather than waiting for the ACL init Job. The Secret is created as a durable side-effect of the bootstrap process and persists indefinitely, unlike the Job itself which Consul Helm 1.x deletes via `ttlSecondsAfterFinished` immediately after it completes. `kubectl wait job/...` would return "not found" on every re-run. The `sample_app` role pre-flight uses the same Secret poll. Both roles then also wait for `consul-connect-injector` to be Available before any pods are scheduled.
-
-On failure, the `sample_app` role automatically runs `kubectl describe pods` and prints the `consul-connect-inject-init` init container logs before failing, giving a precise diagnosis.
+**The fix**: give every Consul-injected pod a dedicated ServiceAccount whose name exactly matches the intended Consul service name. Do not set `consul.hashicorp.com/service-name` — the service name is derived from the ServiceAccount name by the injector.
 
 ### Ubuntu AMI path varies by region
 
-Canonical publishes Ubuntu 24.04 LTS AMIs under two different S3 paths depending on the region:
+Canonical publishes Ubuntu 24.04 LTS AMIs under different paths by region:
 
 | Path | Regions |
 |------|---------|
 | `ubuntu/images/hvm-ssd/ubuntu-noble-24.04-amd64-server-*` | Older global regions (e.g., us-east-1) |
 | `ubuntu/images/hvm-ssd-gp3/ubuntu-noble-24.04-amd64-server-*` | Newer regions (e.g., ap-south-1) |
 
-The AMI data source uses the glob `hvm-ssd*` to match both paths, ensuring it resolves in any AWS region without modification.
+The AMI data source uses the glob `hvm-ssd*` to match both paths without modification.
+
+### AWS description field charset restrictions
+
+IAM role descriptions reject characters above U+00FF (including em-dash `—`). Security group rule descriptions are even more restricted: only `a-zA-Z0-9. _-:/()#,@[]+=&;{}!$*`. All descriptions in this project use plain ASCII hyphens and the word "to" in place of arrows.
+
+---
+
+## Variables Reference
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `region` | `us-east-1` | AWS region |
+| `environment` | — | Environment name (dev, staging, prod) |
+| `project_name` | — | Resource name prefix |
+| `vpc_cidr` | `10.0.0.0/16` | VPC CIDR |
+| `public_subnet_cidr` | `10.0.1.0/24` | Public subnet CIDR |
+| `private_subnet_cidr` | `10.0.2.0/24` | Private subnet CIDR |
+| `availability_zone` | `us-east-1a` | AZ for both subnets |
+| `instance_type_control_plane` | `t3.medium` | Control plane instance type |
+| `instance_type_worker` | `t3.large` | Worker instance type |
+| `key_name` | **required** | EC2 key pair name |
+| `my_ip` | **required** | Admin CIDR (e.g., `1.2.3.4/32`) |
 
 ---
 
 ## Provider Versions
 
-| Provider | Version Constraint |
-|----------|--------------------|
+| Provider | Constraint |
+|----------|------------|
 | `hashicorp/aws` | `~> 5.0` |
 | Terraform | `>= 1.6.0` |
