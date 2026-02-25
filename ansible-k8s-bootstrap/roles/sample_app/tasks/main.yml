@@ -1,0 +1,220 @@
+---
+# =============================================================================
+# sample_app/tasks/main.yml
+#
+# Deploys a two-tier demo application (frontend + backend) in the test-app
+# namespace to demonstrate Consul Connect service mesh.
+#
+# Architecture:
+#   backend  — hashicorp/http-echo:0.2.3, port 9090, echoes a JSON response
+#   frontend — nginx:1.27-alpine, port 80, proxies /api/ to backend via
+#              Consul Connect upstream (localhost:9090 after sidecar injection)
+#
+# Consul Connect:
+#   Both pods have "consul.hashicorp.com/connect-inject: true" annotation.
+#   Consul injects an init container + sidecar proxy container.
+#   frontend reaches backend at localhost:9090 via the Consul sidecar upstream.
+#   No direct pod-to-pod networking required — all traffic goes through proxies.
+#
+# GitOps mode (sample_app_gitops_mode):
+#   false (default): Ansible applies manifests directly via kubernetes.core.k8s
+#   true:            Ansible creates namespace + ArgoCD Application only;
+#                    ArgoCD manages the resources from gitops/sample_app/
+#
+# Prerequisite guard:
+#   Confirms the Consul ACL bootstrap Job and connect-injector are both ready
+#   before scheduling any pods. The pod init container performs a consul login
+#   using the pod's K8s service account — this requires the Kubernetes auth
+#   method to be registered in Consul ACL (done by consul-server-acl-init Job).
+#
+# Wait strategy:
+#   Uses `kubectl wait` (command) rather than kubernetes.core.k8s_info with
+#   wait=true. kubectl wait polls Kubernetes conditions directly and provides
+#   cleaner timeout behaviour. On failure, a rescue block auto-diagnoses pods.
+#
+# Idempotency:
+#   - kubernetes.core.k8s (state: present) is idempotent
+#   - kubectl wait is read-only (changed_when: false)
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Pre-flight: confirm ACL system is ready and injector webhook is active
+# ---------------------------------------------------------------------------
+- name: Confirm consul-bootstrap-acl-token Secret exists (ACL system ready)
+  command: >
+    kubectl get secret consul-bootstrap-acl-token
+    -n {{ consul_namespace }}
+    --kubeconfig=/home/ubuntu/.kube/config
+  changed_when: false
+  become: false
+  register: acl_bootstrap_ready
+  until: acl_bootstrap_ready.rc == 0
+  retries: 60
+  delay: 5
+
+- name: Confirm Consul connect-injector webhook is Available
+  command: >
+    kubectl wait deployment/consul-connect-injector
+    -n {{ consul_namespace }}
+    --for=condition=Available
+    --timeout=60s
+    --kubeconfig=/home/ubuntu/.kube/config
+  changed_when: false
+  become: false
+
+# ---------------------------------------------------------------------------
+# Apply namespace
+# ---------------------------------------------------------------------------
+- name: Apply test-app namespace
+  kubernetes.core.k8s:
+    state: present
+    definition: "{{ lookup('template', 'namespace.yaml.j2') | from_yaml }}"
+    kubeconfig: /home/ubuntu/.kube/config
+  become: false
+
+# ---------------------------------------------------------------------------
+# Direct mode — Ansible applies manifests (sample_app_gitops_mode=false)
+# ---------------------------------------------------------------------------
+- name: Apply backend Deployment and Service (direct mode)
+  kubernetes.core.k8s:
+    state: present
+    definition: "{{ lookup('template', 'backend.yaml.j2') | from_yaml_all | list }}"
+    kubeconfig: /home/ubuntu/.kube/config
+  become: false
+  when: not sample_app_gitops_mode
+
+- name: Apply frontend Deployment, ConfigMap, and Service (direct mode)
+  kubernetes.core.k8s:
+    state: present
+    definition: "{{ lookup('template', 'frontend.yaml.j2') | from_yaml_all | list }}"
+    kubeconfig: /home/ubuntu/.kube/config
+  become: false
+  when: not sample_app_gitops_mode
+
+# ---------------------------------------------------------------------------
+# GitOps mode — create ArgoCD Application (sample_app_gitops_mode=true)
+# ---------------------------------------------------------------------------
+- name: Apply ArgoCD Application for sample app (GitOps mode)
+  kubernetes.core.k8s:
+    state: present
+    definition: "{{ lookup('template', 'argocd-application.yaml.j2') | from_yaml }}"
+    kubeconfig: /home/ubuntu/.kube/config
+  become: false
+  when: sample_app_gitops_mode
+
+# ---------------------------------------------------------------------------
+# Wait for pods to be Ready (direct mode only)
+# Uses kubectl wait with a rescue block that auto-diagnoses on failure.
+# ---------------------------------------------------------------------------
+- name: Wait for backend deployment to be Available
+  block:
+    - name: kubectl wait backend deployment Available
+      command: >
+        kubectl wait deployment/backend
+        -n {{ sample_app_namespace }}
+        --for=condition=Available
+        --timeout=300s
+        --kubeconfig=/home/ubuntu/.kube/config
+      changed_when: false
+      become: false
+  rescue:
+    - name: Collect backend pod descriptions for diagnosis
+      command: >
+        kubectl describe pods -n {{ sample_app_namespace }} -l app=backend
+        --kubeconfig=/home/ubuntu/.kube/config
+      changed_when: false
+      become: false
+      register: backend_pod_describe
+
+    - name: Collect backend pod init container logs
+      command: >
+        kubectl logs -n {{ sample_app_namespace }}
+        -l app=backend
+        -c consul-connect-inject-init
+        --tail=50
+        --kubeconfig=/home/ubuntu/.kube/config
+      changed_when: false
+      become: false
+      register: backend_init_logs
+      failed_when: false
+
+    - name: Show backend pod diagnostics
+      debug:
+        msg:
+          - "=== kubectl describe pods (backend) ==="
+          - "{{ backend_pod_describe.stdout }}"
+          - "=== consul-connect-inject-init logs ==="
+          - "{{ backend_init_logs.stdout | default('(no logs available)') }}"
+
+    - name: Fail after diagnostics
+      fail:
+        msg: >
+          Backend deployment did not become Available within 300s.
+          ACL auth method issue or image pull problem — see diagnostics above.
+          Check: kubectl get pods -n {{ sample_app_namespace }} -o wide
+  when: not sample_app_gitops_mode
+
+- name: Wait for frontend deployment to be Available
+  block:
+    - name: kubectl wait frontend deployment Available
+      command: >
+        kubectl wait deployment/frontend
+        -n {{ sample_app_namespace }}
+        --for=condition=Available
+        --timeout=300s
+        --kubeconfig=/home/ubuntu/.kube/config
+      changed_when: false
+      become: false
+  rescue:
+    - name: Collect frontend pod descriptions for diagnosis
+      command: >
+        kubectl describe pods -n {{ sample_app_namespace }} -l app=frontend
+        --kubeconfig=/home/ubuntu/.kube/config
+      changed_when: false
+      become: false
+      register: frontend_pod_describe
+
+    - name: Collect frontend pod init container logs
+      command: >
+        kubectl logs -n {{ sample_app_namespace }}
+        -l app=frontend
+        -c consul-connect-inject-init
+        --tail=50
+        --kubeconfig=/home/ubuntu/.kube/config
+      changed_when: false
+      become: false
+      register: frontend_init_logs
+      failed_when: false
+
+    - name: Show frontend pod diagnostics
+      debug:
+        msg:
+          - "=== kubectl describe pods (frontend) ==="
+          - "{{ frontend_pod_describe.stdout }}"
+          - "=== consul-connect-inject-init logs ==="
+          - "{{ frontend_init_logs.stdout | default('(no logs available)') }}"
+
+    - name: Fail after diagnostics
+      fail:
+        msg: >
+          Frontend deployment did not become Available within 300s.
+          ACL auth method issue or image pull problem — see diagnostics above.
+          Check: kubectl get pods -n {{ sample_app_namespace }} -o wide
+  when: not sample_app_gitops_mode
+
+- name: Display sample app verification info
+  debug:
+    msg:
+      - "Sample app deployed in namespace: {{ sample_app_namespace }}"
+      - "Mode: {{ 'GitOps (ArgoCD)' if sample_app_gitops_mode else 'Direct (Ansible)' }}"
+      - "Verify Consul Connect service mesh:"
+      - "  1. Check pods (each should have 3 containers: app + consul-proxy + consul-init):"
+      - "     kubectl get pods -n {{ sample_app_namespace }}"
+      - "  2. Open Consul UI - services 'backend' and 'frontend' should appear:"
+      - "     https://{{ consul_hostname }}"
+      - "  3. Test backend directly via port-forward:"
+      - "     kubectl port-forward -n {{ sample_app_namespace }} deploy/backend 9090:9090"
+      - "     curl http://localhost:9090"
+      - "  4. Test frontend proxy to backend:"
+      - "     kubectl port-forward -n {{ sample_app_namespace }} deploy/frontend 8080:80"
+      - "     curl http://localhost:8080/api/"

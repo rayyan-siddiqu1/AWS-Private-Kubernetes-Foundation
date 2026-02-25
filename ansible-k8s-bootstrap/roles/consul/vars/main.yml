@@ -1,0 +1,3 @@
+---
+# consul/vars/main.yml — role-internal defaults
+# Global overrides live in group_vars/all.yml.

@@ -1,0 +1,8 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: "{{ sample_app_namespace }}"
+  labels:
+    # Consul Connect handles sidecar injection here.
+    # Istio injection must be disabled to avoid dual-proxy conflicts.
+    istio-injection: disabled

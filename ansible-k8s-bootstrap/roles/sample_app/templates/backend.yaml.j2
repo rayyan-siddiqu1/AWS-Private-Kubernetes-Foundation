@@ -1,0 +1,65 @@
+---
+# Each Consul Connect service needs its own ServiceAccount.
+# consul-k8s-auth-method binding rule: BindType=service, BindName="${serviceaccount.name}"
+# → SA name "backend" → Consul issues a token scoped to service "backend"
+# → init container can register and operate as the "backend" service ✓
+# Using SA "default" produces a token for service "default", which cannot
+# register as "backend" → "Permission denied" at ACL auth method login.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: backend
+  namespace: "{{ sample_app_namespace }}"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  namespace: "{{ sample_app_namespace }}"
+  labels:
+    app: backend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: backend
+  template:
+    metadata:
+      labels:
+        app: backend
+      annotations:
+        consul.hashicorp.com/connect-inject: "true"
+        consul.hashicorp.com/service-port: "9090"
+    spec:
+      serviceAccountName: backend
+      containers:
+        - name: backend
+          image: hashicorp/http-echo:0.2.3
+          args:
+            - -listen=:9090
+            - -text={"service":"backend","status":"ok","consul_connect":true}
+          ports:
+            - containerPort: 9090
+              name: http
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 100m
+              memory: 32Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend
+  namespace: "{{ sample_app_namespace }}"
+  labels:
+    app: backend
+spec:
+  selector:
+    app: backend
+  ports:
+    - name: http
+      port: 9090
+      targetPort: 9090

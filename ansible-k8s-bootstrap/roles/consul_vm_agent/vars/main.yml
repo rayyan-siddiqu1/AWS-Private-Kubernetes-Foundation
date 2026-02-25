@@ -1,0 +1,15 @@
+---
+# consul_vm_agent/vars/main.yml
+# Override these in group_vars/consul_vm.yml or host_vars/ for real deployments.
+
+consul_vm_agent_version: "1.20.1-1"
+consul_datacenter: dc1
+
+# Host + port of the Consul server cluster (accessible via NodePort from outside k8s).
+# Point this at the control plane public IP and the NodePort for Consul's
+# Serf LAN gossip port (8301 by default inside k8s, mapped to a NodePort externally).
+consul_server_host: "{{ hostvars[groups['masters'][0]]['ansible_host'] }}"
+consul_server_gossip_port: 8301
+
+# The Consul HTTP API NodePort for this VM agent to reach the cluster.
+consul_server_http_port: 8500

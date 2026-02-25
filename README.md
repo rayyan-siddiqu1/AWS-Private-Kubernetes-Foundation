@@ -354,27 +354,36 @@ The `ansible-k8s-bootstrap/` directory contains a fully modular, idempotent Ansi
 ```
 ansible-k8s-bootstrap/
 ├── ansible.cfg                  SSH settings, privilege escalation, fact caching
-├── site.yml                     Orchestration — 10 plays in dependency order
+├── site.yml                     Orchestration — 14 plays in dependency order
 ├── requirements.yml             Collection dependencies (kubernetes.core)
 ├── inventory/
-│   └── hosts.ini                Static inventory (masters + workers)
+│   └── hosts.ini                Static inventory (masters + workers + consul_vm)
 ├── group_vars/
 │   ├── all.yml                  Shared vars: k8s version, CIDRs, chart versions
 │   ├── masters.yml              Control-plane-specific vars
 │   └── workers.yml              ProxyJump config (workers in private subnet)
-└── roles/
-    ├── common/                  Swap, kernel modules, sysctl, base packages
-    ├── container_runtime/       containerd from Docker repo, SystemdCgroup=true
-    ├── kubernetes_packages/     kubelet + kubeadm + kubectl, held versions
-    ├── master/                  kubeadm init, kubeconfig, join command
-    ├── worker/                  kubeadm join (reads command from master)
-    ├── cni/                     Calico v3.29.1 manifest, waits for Ready nodes
-    ├── metrics_server/          metrics-server + --kubelet-insecure-tls patch
-    ├── helm/                    Helm v3 binary + 4 chart repos
-    ├── ingress_nginx/           NGINX Ingress Controller (NodePort 30080/30443)
-    ├── cert_manager/            cert-manager + self-signed ClusterIssuer
-    ├── argocd/                  ArgoCD GitOps platform + Ingress
-    └── monitoring/              kube-prometheus-stack (Prometheus + Grafana)
+├── roles/
+│   ├── common/                  Swap, kernel modules, sysctl, base packages
+│   ├── container_runtime/       containerd from Docker repo, SystemdCgroup=true
+│   ├── kubernetes_packages/     kubelet + kubeadm + kubectl, held versions
+│   ├── master/                  kubeadm init, kubeconfig, join command
+│   ├── worker/                  kubeadm join (reads command from master)
+│   ├── cni/                     Calico v3.29.1 manifest, waits for Ready nodes
+│   ├── metrics_server/          metrics-server + --kubelet-insecure-tls patch
+│   ├── helm/                    Helm v3 binary + chart repos (incl. hashicorp + istio)
+│   ├── ingress_nginx/           NGINX Ingress Controller (NodePort 30080/30443)
+│   ├── cert_manager/            cert-manager + self-signed ClusterIssuer
+│   ├── argocd/                  ArgoCD GitOps platform + Ingress
+│   ├── monitoring/              kube-prometheus-stack (Prometheus + Grafana)
+│   ├── istio/                   Istio service mesh (base CRDs + istiod)
+│   ├── consul/                  Consul service discovery + Connect mesh
+│   ├── sample_app/              Demo app: frontend + backend via Consul Connect
+│   └── consul_vm_agent/         Consul client agent for VM/bare-metal nodes
+└── gitops/
+    └── consul/
+        ├── namespace.yaml       consul Namespace manifest
+        ├── values.yaml          Consul Helm values (GitOps mode)
+        └── application.yaml     ArgoCD Application pointing to this repo
 ```
 
 ### Prerequisites
@@ -452,11 +461,14 @@ ansible all -i inventory/hosts.ini -m ping
 # Dry run
 ansible-playbook -i inventory/hosts.ini site.yml --check
 
-# Full deployment — cluster bootstrap + platform stack (~15-20 minutes)
+# Full deployment — cluster bootstrap + platform stack (~20-25 minutes)
 ansible-playbook -i inventory/hosts.ini site.yml
 
 # Platform plays only (cluster must already exist):
 ansible-playbook -i inventory/hosts.ini site.yml --tags platform
+
+# Consul + Istio stack only (platform plays 1-12 must already have run):
+ansible-playbook -i inventory/hosts.ini site.yml --tags consul-stack
 ```
 
 ### Validate the Cluster
@@ -484,6 +496,7 @@ After the full playbook completes, the following tools are accessible using the 
 |---------|-----|-------------|
 | ArgoCD | `https://argocd.<MASTER_PUBLIC_IP>.nip.io:30443` | admin / (printed by playbook) |
 | Grafana | `https://grafana.<MASTER_PUBLIC_IP>.nip.io:30443` | admin / prom-operator |
+| Consul UI | `https://consul.<MASTER_PUBLIC_IP>.nip.io:30443` | ACL token (printed by playbook) |
 | NGINX Ingress HTTP | `http://<MASTER_PUBLIC_IP>:30080` | — |
 | NGINX Ingress HTTPS | `https://<MASTER_PUBLIC_IP>:30443` | — |
 
@@ -493,6 +506,12 @@ After the full playbook completes, the following tools are accessible using the 
 > ```bash
 > kubectl -n argocd get secret argocd-initial-admin-secret \
 >   -o jsonpath='{.data.password}' | base64 -d
+> ```
+
+> The Consul bootstrap ACL token is printed by the consul role. It can also be retrieved manually:
+> ```bash
+> kubectl -n consul get secret consul-bootstrap-acl-token \
+>   -o jsonpath='{.data.token}' | base64 -d
 > ```
 
 ### Role Responsibilities
@@ -506,11 +525,15 @@ After the full playbook completes, the following tools are accessible using the 
 | `worker` | Workers | Fetch join command from master via `slurp`, run `kubeadm join` (idempotent) |
 | `cni` | Control plane | Apply Calico manifest, wait for all nodes `Ready` |
 | `metrics_server` | Control plane | Apply manifest, patch `--kubelet-insecure-tls`, verify `kubectl top nodes` |
-| `helm` | Control plane | Install Helm v3 binary, install `python3-kubernetes`, add 4 chart repositories |
+| `helm` | Control plane | Install Helm v3 binary, install `python3-kubernetes`, add 6 chart repositories |
 | `ingress_nginx` | Control plane | Install NGINX Ingress via Helm, NodePort 30080/30443, metrics ServiceMonitor enabled |
 | `cert_manager` | Control plane | Install cert-manager via Helm (with CRDs), create self-signed ClusterIssuer |
 | `argocd` | Control plane | Install ArgoCD via Helm (insecure mode), apply Ingress, print admin password |
 | `monitoring` | Control plane | Install kube-prometheus-stack via Helm, apply Grafana Ingress |
+| `istio` | Control plane | Install istio-base (CRDs) + istiod via Helm; no Ingress Gateway (NGINX handles edge) |
+| `consul` | Control plane | Install local-path-provisioner, install Consul via Helm (or ArgoCD in GitOps mode), apply Ingress + ServiceMonitor + Grafana dashboard, print ACL token |
+| `sample_app` | Control plane | Deploy frontend + backend in `test-app` namespace with Consul Connect sidecar injection |
+| `consul_vm_agent` | consul_vm hosts | Install Consul binary, configure client agent, register `legacy-api` service; skipped if `[consul_vm]` group is empty |
 
 ### Idempotency Design
 
@@ -527,6 +550,141 @@ After the full playbook completes, the following tools are accessible using the 
 | ClusterIssuer re-applied | `kubernetes.core.k8s` with `state: present` — no-op if object unchanged |
 | Ingress objects re-applied | `kubernetes.core.k8s` with `state: present` — no-op if object unchanged |
 | ArgoCD admin secret missing | `failed_when: false` — soft-fail if secret was deleted after first login |
+| local-path StorageClass re-install | `kubernetes.core.k8s_info` check — skip install if StorageClass already exists |
+| Consul ACL token missing | `failed_when: false` — soft-fail if bootstrap secret not yet available |
+| Consul StatefulSet wait | `kubectl rollout status statefulset/consul-server` — read-only, always re-checked |
+
+### Istio Service Mesh
+
+Istio is installed in **platform-wide** mode. Sidecar injection is opt-in per namespace via label:
+
+```bash
+# Enable Istio sidecar injection in a namespace
+kubectl label namespace <namespace> istio-injection=enabled
+
+# Verify istiod is running
+kubectl get pods -n istio-system
+```
+
+**Important:** The `consul` and `test-app` namespaces have `istio-injection: disabled` to avoid dual-proxy conflicts with Consul Connect. Each namespace uses **one** mesh layer:
+
+| Namespace | Mesh Layer |
+|-----------|-----------|
+| `istio-system` | Istio control plane |
+| `consul` | Consul Connect (Istio disabled) |
+| `test-app` | Consul Connect (Istio disabled) |
+| All others | Istio (opt-in via label) |
+
+No Istio Ingress Gateway is installed — NGINX Ingress handles all edge TLS termination.
+
+---
+
+### Consul Service Discovery and Service Mesh
+
+Consul runs as a 3-replica StatefulSet in the `consul` namespace. Features enabled:
+
+- **Service discovery**: automatic registration of Kubernetes services
+- **Connect service mesh**: Envoy sidecar injection opt-in per pod
+- **ACLs**: bootstrap token auto-created, displayed by playbook
+- **UI**: exposed via NGINX Ingress at `https://consul.<IP>.nip.io:30443`
+- **Metrics**: Prometheus ServiceMonitor + Grafana dashboard auto-imported
+
+**Storage**: Rancher `local-path-provisioner` (installed as a prerequisite) provides the `local-path` StorageClass using node-local disk. No AWS EBS configuration required.
+
+**Consul Connect opt-in** — add these annotations to any pod spec:
+
+```yaml
+annotations:
+  consul.hashicorp.com/connect-inject: "true"
+  consul.hashicorp.com/service-name: my-service
+  consul.hashicorp.com/service-port: "8080"
+  # Optional: upstream service accessible at localhost:<port>
+  consul.hashicorp.com/connect-service-upstreams: "other-service:9090"
+```
+
+**GitOps mode** — set `consul_gitops_mode: true` in `group_vars/all.yml` to have ArgoCD manage the Consul Helm release instead of Ansible installing it directly. See [GitOps Setup](#gitops-setup) below.
+
+---
+
+### Sample Application (Consul Connect Demo)
+
+A two-tier demo app is deployed in the `test-app` namespace:
+
+```
+[frontend (nginx)] --Consul Connect--> [backend (http-echo)]
+  port 80                                port 9090
+```
+
+- **backend**: `hashicorp/http-echo:0.2.3` — returns a JSON response
+- **frontend**: `nginx:1.27-alpine` — proxies `/api/` to `localhost:9090` (Consul upstream)
+
+Each pod runs 3 containers: the app + consul-proxy sidecar + consul-init init container.
+
+Verify after deployment:
+
+```bash
+# Check pods — expect 3 containers per pod
+kubectl get pods -n test-app
+
+# Port-forward to frontend and test the proxy path
+kubectl port-forward -n test-app deploy/frontend 8080:80
+curl http://localhost:8080/api/
+
+# Check Consul UI — both services should show passing health checks
+open https://consul.<MASTER_PUBLIC_IP>.nip.io:30443
+```
+
+---
+
+### GitOps Setup
+
+The `gitops/consul/` directory contains pre-rendered manifests for ArgoCD to manage Consul.
+
+**To activate GitOps mode:**
+
+1. Push this repository to GitHub:
+   ```bash
+   git remote add origin https://github.com/<your-username>/aws-k8s-foundation
+   git push -u origin main
+   ```
+
+2. Update `gitops/consul/application.yaml` and `gitops/sample_app/application.yaml` — replace the `repoURL` placeholder:
+   ```yaml
+   repoURL: https://github.com/<your-username>/aws-k8s-foundation
+   ```
+
+3. Update `group_vars/all.yml`:
+   ```yaml
+   consul_gitops_mode: true
+   consul_gitops_repo_url: "https://github.com/<your-username>/aws-k8s-foundation"
+
+   sample_app_gitops_mode: true
+   sample_app_gitops_repo_url: "https://github.com/<your-username>/aws-k8s-foundation"
+   ```
+
+4. Run the consul-stack plays:
+   ```bash
+   ansible-playbook -i inventory/hosts.ini site.yml --tags consul-stack
+   ```
+
+ArgoCD will sync the Consul Helm release from `gitops/consul/values.yaml` and the sample app from `gitops/sample_app/` and self-heal on drift.
+
+**GitOps directory layout:**
+
+```
+gitops/
+├── consul/
+│   ├── namespace.yaml       consul Namespace
+│   ├── values.yaml          Consul Helm values
+│   └── application.yaml     ArgoCD Application for Consul
+└── sample_app/
+    ├── namespace.yaml        test-app Namespace
+    ├── backend.yaml          backend Deployment + Service
+    ├── frontend.yaml         frontend ConfigMap + Deployment + Service
+    └── application.yaml      ArgoCD Application for sample app
+```
+
+---
 
 ### Private Subnet SSH Access
 
@@ -558,6 +716,20 @@ kubeadm validates that `--node-name` resolves locally. The EC2 hostname is `ip-1
 ### AWS description field charset restrictions
 
 IAM role descriptions must match `[\u0009\u000A\u000D\u0020-\u007E\u00A1-\u00FF]*` — em-dashes (`—`, U+2014) are above U+00FF and rejected. Security group rule descriptions are even more restricted: `a-zA-Z0-9. _-:/()#,@[]+=&;{}!$*` — this excludes `>`, `<`, `→`, and em-dashes. All descriptions in this project use plain ASCII hyphens (`-`) and the word `to` in place of any arrow.
+
+### Consul Connect pod init container timeout
+
+When `consul.hashicorp.com/connect-inject: "true"` is set on a pod, the Consul webhook injects an init container (`consul-connect-inject-init`) that performs a `consul login` using the pod's Kubernetes service account JWT. This call hits the Consul ACL HTTP endpoint and requires the **Kubernetes auth method** to be registered in Consul's ACL system.
+
+The Kubernetes auth method is set up by the `consul-server-acl-init` Job, which runs asynchronously after the StatefulSet servers start. Waiting for the `consul-connect-injector` deployment to become `Available` is **not sufficient** — the injector can be running as a Kubernetes webhook before Consul's ACL auth method is fully registered, meaning injected pod init containers will still fail with HTTP 403.
+
+**Root cause (confirmed via init container logs)**: `ACL auth method login failed: rpc error: code = PermissionDenied`. The `consul-k8s-auth-method` binding rule uses `BindType: service` with `BindName: "${serviceaccount.name}"`. A pod running as the `default` ServiceAccount gets a Consul token scoped to service "default" — when the init container then tries to register the pod as "backend", the token lacks write access to the "backend" catalog entry and the login fails with "Permission denied".
+
+**Fix**: each pod is given a dedicated ServiceAccount whose name matches the Consul service name. The `backend` ServiceAccount produces a Consul token scoped to the "backend" service; `frontend` produces a token scoped to "frontend". The `consul.hashicorp.com/service-name` annotation is removed — the service name is derived from the ServiceAccount name by the injector.
+
+For the ACL wait sequencing: the `consul` role polls for the `consul-bootstrap-acl-token` Secret (using `until/retries`) rather than waiting for the ACL init Job. The Secret is created as a durable side-effect of the bootstrap process and persists indefinitely, unlike the Job itself which Consul Helm 1.x deletes via `ttlSecondsAfterFinished` immediately after it completes. `kubectl wait job/...` would return "not found" on every re-run. The `sample_app` role pre-flight uses the same Secret poll. Both roles then also wait for `consul-connect-injector` to be Available before any pods are scheduled.
+
+On failure, the `sample_app` role automatically runs `kubectl describe pods` and prints the `consul-connect-inject-init` init container logs before failing, giving a precise diagnosis.
 
 ### Ubuntu AMI path varies by region
 

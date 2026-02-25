@@ -1,0 +1,79 @@
+---
+# =============================================================================
+# istio/tasks/main.yml
+#
+# Installs Istio service mesh via Helm (istio-base CRDs + istiod).
+# No Ingress Gateway is installed — NGINX Ingress handles edge traffic.
+#
+# Strategy:
+#   - istio-base: installs CRDs only
+#   - istiod:     installs the control plane (pilot, citadel, galley combined)
+#
+# Namespace labeling:
+#   Apply label "istio-injection: enabled" to namespaces that need sidecar
+#   injection. The consul and test-app namespaces explicitly set
+#   "istio-injection: disabled" to avoid conflicts with Consul Connect proxy.
+#
+# Idempotency:
+#   - kubernetes.core.helm is idempotent (helm upgrade --install)
+#   - kubernetes.core.k8s_info wait is idempotent
+# =============================================================================
+
+- name: Add Istio Helm repository
+  kubernetes.core.helm_repository:
+    name: istio
+    repo_url: https://istio-release.storage.googleapis.com/charts
+    binary_path: "{{ helm_binary_path }}"
+  become: false
+
+- name: Install istio-base (CRDs)
+  kubernetes.core.helm:
+    name: "{{ istio_base_release_name }}"
+    chart_ref: istio/base
+    chart_version: "{{ istio_chart_version }}"
+    release_namespace: "{{ istio_namespace }}"
+    create_namespace: true
+    values: "{{ lookup('template', 'values-base.yaml.j2') | from_yaml }}"
+    binary_path: "{{ helm_binary_path }}"
+    kubeconfig: /home/ubuntu/.kube/config
+    wait: true
+    wait_timeout: "300s"
+  become: false
+
+- name: Install istiod (control plane)
+  kubernetes.core.helm:
+    name: "{{ istio_istiod_release_name }}"
+    chart_ref: istio/istiod
+    chart_version: "{{ istio_chart_version }}"
+    release_namespace: "{{ istio_namespace }}"
+    create_namespace: false
+    values: "{{ lookup('template', 'values-istiod.yaml.j2') | from_yaml }}"
+    binary_path: "{{ helm_binary_path }}"
+    kubeconfig: /home/ubuntu/.kube/config
+    wait: true
+    wait_timeout: "300s"
+  become: false
+
+- name: Wait for istiod deployment to be Available
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: Deployment
+    name: istiod
+    namespace: "{{ istio_namespace }}"
+    wait: true
+    wait_condition:
+      type: Available
+      status: "True"
+    wait_timeout: 300
+    kubeconfig: /home/ubuntu/.kube/config
+  become: false
+
+- name: Display Istio installation info
+  debug:
+    msg:
+      - "Istio is ready."
+      - "Namespace : {{ istio_namespace }}"
+      - "Version   : {{ istio_chart_version }}"
+      - "To enable sidecar injection in a namespace:"
+      - "  kubectl label namespace <ns> istio-injection=enabled"
+      - "NOTE: consul and test-app namespaces use Consul Connect (istio-injection=disabled)"

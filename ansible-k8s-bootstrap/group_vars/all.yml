@@ -62,6 +62,10 @@ helm_repos:
     url: https://argoproj.github.io/argo-helm
   - name: prometheus-community
     url: https://prometheus-community.github.io/helm-charts
+  - name: hashicorp
+    url: https://helm.releases.hashicorp.com
+  - name: istio
+    url: https://istio-release.storage.googleapis.com/charts
 
 # ---------------------------------------------------------------------------
 # NGINX Ingress Controller
@@ -98,3 +102,50 @@ monitoring_release_name: kube-prometheus-stack
 grafana_hostname: "grafana.{{ ingress_base_domain }}"
 # Change this before deploying to a non-lab environment.
 grafana_admin_password: "prom-operator"
+
+# ---------------------------------------------------------------------------
+# Istio service mesh
+# ---------------------------------------------------------------------------
+# Chart version for both istio-base (CRDs) and istiod (control plane).
+istio_chart_version: "1.24.2"
+istio_namespace: istio-system
+istio_base_release_name: istio-base
+istio_istiod_release_name: istiod
+
+# ---------------------------------------------------------------------------
+# Consul service discovery + service mesh
+# ---------------------------------------------------------------------------
+consul_chart_version: "1.6.2"
+consul_namespace: consul
+consul_release_name: consul
+consul_hostname: "consul.{{ ingress_base_domain }}"
+
+# GitOps mode:
+#   false (default) — Ansible installs Consul directly via Helm
+#   true            — Ansible creates namespace + ArgoCD Application;
+#                     ArgoCD manages the release from gitops/consul/
+consul_gitops_mode: false
+
+# GitOps repo settings (only used when consul_gitops_mode=true).
+# Update consul_gitops_repo_url to your GitHub repository URL.
+consul_gitops_repo_url: "https://github.com/PLACEHOLDER/aws-k8s-foundation"
+consul_gitops_target_revision: "HEAD"
+
+# Rancher local-path-provisioner version (prerequisite for Consul storage).
+local_path_provisioner_version: "0.0.28"
+
+# ---------------------------------------------------------------------------
+# Sample application (Consul Connect demo)
+# ---------------------------------------------------------------------------
+sample_app_namespace: test-app
+
+# GitOps mode:
+#   false (default) — Ansible applies manifests directly via kubernetes.core.k8s
+#   true            — Ansible creates namespace + ArgoCD Application;
+#                     ArgoCD manages resources from gitops/sample_app/
+sample_app_gitops_mode: false
+
+# GitOps repo settings (only used when sample_app_gitops_mode=true).
+# Update sample_app_gitops_repo_url to your GitHub repository URL.
+sample_app_gitops_repo_url: "https://github.com/PLACEHOLDER/aws-k8s-foundation"
+sample_app_gitops_target_revision: "HEAD"

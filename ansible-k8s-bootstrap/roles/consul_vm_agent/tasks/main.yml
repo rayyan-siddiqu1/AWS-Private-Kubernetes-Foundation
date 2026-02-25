@@ -1,0 +1,99 @@
+---
+# =============================================================================
+# consul_vm_agent/tasks/main.yml
+#
+# Installs and configures a Consul agent on a non-Kubernetes VM (or bare metal)
+# so it can join the Consul cluster running inside Kubernetes.
+#
+# This role simulates a "legacy VM" scenario where an existing service needs
+# to join the Consul service mesh without being containerized.
+#
+# Prerequisites on the target host:
+#   - Ubuntu 20.04+ or Debian 11+
+#   - The Consul Kubernetes cluster is reachable on consul_server_host:consul_server_port
+#
+# Connection to Kubernetes Consul:
+#   The Consul servers inside Kubernetes are accessible via NodePort service.
+#   consul_server_host: control-plane public IP (or private IP if VPN)
+#   consul_server_port: NodePort for Consul serf/RPC (defaults to 8301/8500)
+#
+#   IMPORTANT: The Consul NodePort service must be configured in the Consul
+#   Helm values with the appropriate port exposure. In this lab, we rely on
+#   the Consul client agent communicating via the NodePort exposed on the
+#   control plane. Update security groups to allow the required ports.
+#
+# Idempotency:
+#   - GPG key: creates: guard
+#   - Package: apt idempotency
+#   - Service config: template + handler restart
+#   - Service registration: config file + handler
+# =============================================================================
+
+- name: Add HashiCorp GPG key
+  shell: |
+    curl -fsSL https://apt.releases.hashicorp.com/gpg | \
+      gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
+  args:
+    creates: /usr/share/keyrings/hashicorp-archive-keyring.gpg
+  become: true
+
+- name: Add HashiCorp apt repository
+  apt_repository:
+    repo: "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com {{ ansible_distribution_release }} main"
+    state: present
+    filename: hashicorp
+  become: true
+
+- name: Install Consul
+  apt:
+    name: "consul={{ consul_vm_agent_version }}"
+    state: present
+    update_cache: true
+  become: true
+  notify: restart consul
+
+- name: Ensure Consul config directory exists
+  file:
+    path: /etc/consul.d
+    state: directory
+    owner: consul
+    group: consul
+    mode: "0750"
+  become: true
+
+- name: Deploy Consul agent configuration
+  template:
+    src: consul-agent.hcl.j2
+    dest: /etc/consul.d/consul-agent.hcl
+    owner: consul
+    group: consul
+    mode: "0640"
+  become: true
+  notify: restart consul
+
+- name: Deploy dummy service registration
+  template:
+    src: dummy-service.hcl.j2
+    dest: /etc/consul.d/legacy-api.hcl
+    owner: consul
+    group: consul
+    mode: "0640"
+  become: true
+  notify: restart consul
+
+- name: Enable and start Consul service
+  systemd:
+    name: consul
+    enabled: true
+    state: started
+    daemon_reload: true
+  become: true
+
+- name: Display Consul VM agent info
+  debug:
+    msg:
+      - "Consul VM agent configured."
+      - "Joining cluster at: {{ consul_server_host }}:{{ consul_server_gossip_port }}"
+      - "Datacenter        : {{ consul_datacenter }}"
+      - "Registered service: legacy-api (port 8080)"
+      - "Verify join: consul members (on this host or via kubectl exec)"

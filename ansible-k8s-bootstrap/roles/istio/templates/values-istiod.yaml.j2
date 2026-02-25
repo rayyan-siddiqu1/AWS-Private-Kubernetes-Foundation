@@ -1,0 +1,25 @@
+# istiod Helm values
+# Minimal resource footprint for a lab cluster.
+# No Ingress Gateway — NGINX Ingress handles edge TLS.
+
+global:
+  proxy:
+    resources:
+      requests:
+        cpu: 10m
+        memory: 40Mi
+      limits:
+        cpu: 200m
+        memory: 256Mi
+
+pilot:
+  env:
+    # Expose istiod status so kubectl can show mesh config sync state
+    PILOT_ENABLE_STATUS: "true"
+
+meshConfig:
+  defaultConfig:
+    proxyMetadata:
+      # Allow Prometheus to scrape Envoy sidecar metrics via annotation-based
+      # discovery (prometheus.io/scrape, prometheus.io/port, prometheus.io/path)
+      ISTIO_PROMETHEUS_ANNOTATIONS_ENABLED: "true"

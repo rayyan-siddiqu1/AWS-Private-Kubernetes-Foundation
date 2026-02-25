@@ -1,0 +1,208 @@
+---
+# =============================================================================
+# consul/tasks/main.yml
+#
+# Installs HashiCorp Consul on Kubernetes via the official Helm chart.
+#
+# Prerequisites handled here:
+#   - Rancher local-path-provisioner (creates "local-path" StorageClass)
+#     Consul StatefulSet servers need persistent storage; this avoids any
+#     AWS EBS/EFS dependency and works on node-local disk.
+#
+# GitOps mode (consul_gitops_mode):
+#   false (default): Ansible installs Consul directly via kubernetes.core.helm
+#   true:            Ansible creates namespace + ArgoCD Application only;
+#                    ArgoCD manages the Helm release from gitops/consul/
+#
+# ACLs:
+#   global.acls.manageSystemACLs=true — bootstrap token auto-created.
+#   Token is read from consul-bootstrap-acl-token secret and displayed.
+#
+# Idempotency:
+#   - StorageClass check before installing local-path-provisioner
+#   - kubernetes.core.helm is idempotent
+#   - kubectl rollout/wait commands are read-only (changed_when: false)
+#   - kubernetes.core.k8s (state: present) is idempotent
+#   - failed_when: false on ACL token read (secret may not exist yet or
+#     may have been rotated)
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Step 1 — local-path-provisioner (prerequisite StorageClass)
+# ---------------------------------------------------------------------------
+- name: Check if local-path StorageClass already exists
+  kubernetes.core.k8s_info:
+    api_version: storage.k8s.io/v1
+    kind: StorageClass
+    name: local-path
+    kubeconfig: /home/ubuntu/.kube/config
+  register: local_path_sc
+  become: false
+
+- name: Install Rancher local-path-provisioner
+  kubernetes.core.k8s:
+    state: present
+    src: "https://raw.githubusercontent.com/rancher/local-path-provisioner/v{{ local_path_provisioner_version }}/deploy/local-path-storage.yaml"
+    kubeconfig: /home/ubuntu/.kube/config
+  become: false
+  when: local_path_sc.resources | length == 0
+
+# ---------------------------------------------------------------------------
+# Step 2 — HashiCorp Helm repository
+# ---------------------------------------------------------------------------
+- name: Add HashiCorp Helm repository
+  kubernetes.core.helm_repository:
+    name: hashicorp
+    repo_url: https://helm.releases.hashicorp.com
+    binary_path: "{{ helm_binary_path }}"
+  become: false
+
+# ---------------------------------------------------------------------------
+# Step 3a — Direct Helm install (consul_gitops_mode=false)
+# ---------------------------------------------------------------------------
+- name: Install Consul via Helm (direct mode)
+  kubernetes.core.helm:
+    name: "{{ consul_release_name }}"
+    chart_ref: hashicorp/consul
+    chart_version: "{{ consul_chart_version }}"
+    release_namespace: "{{ consul_namespace }}"
+    create_namespace: true
+    values: "{{ lookup('template', 'values.yaml.j2') | from_yaml }}"
+    binary_path: "{{ helm_binary_path }}"
+    kubeconfig: /home/ubuntu/.kube/config
+    wait: true
+    wait_timeout: "300s"
+  become: false
+  when: not consul_gitops_mode
+
+# ---------------------------------------------------------------------------
+# Step 3b — GitOps mode (consul_gitops_mode=true)
+# ---------------------------------------------------------------------------
+- name: Create consul namespace (GitOps mode)
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ consul_namespace }}"
+        labels:
+          # Consul Connect manages its own proxy injection in this namespace
+          istio-injection: disabled
+    kubeconfig: /home/ubuntu/.kube/config
+  become: false
+  when: consul_gitops_mode
+
+- name: Apply ArgoCD Application for Consul (GitOps mode)
+  kubernetes.core.k8s:
+    state: present
+    definition: "{{ lookup('template', 'argocd-application.yaml.j2') | from_yaml }}"
+    kubeconfig: /home/ubuntu/.kube/config
+  become: false
+  when: consul_gitops_mode
+
+# ---------------------------------------------------------------------------
+# Step 4 — Wait for Consul servers to be ready
+# ---------------------------------------------------------------------------
+- name: Wait for Consul server StatefulSet rollout
+  command: >
+    kubectl rollout status statefulset/consul-server
+    -n {{ consul_namespace }}
+    --timeout=300s
+    --kubeconfig=/home/ubuntu/.kube/config
+  changed_when: false
+  become: false
+
+# ---------------------------------------------------------------------------
+# Step 4b — Wait for Consul ACL bootstrap to complete
+#
+# The ACL init Job (consul-server-acl-init) runs after the StatefulSet is up.
+# It bootstraps the ACL system, creates per-component tokens, and registers
+# the Kubernetes auth method so that pod init containers can do
+# `consul login -method=kubernetes` using their service account JWTs.
+#
+# We cannot use `kubectl wait job/...` because Consul Helm 1.x sets
+# ttlSecondsAfterFinished on the job — it is garbage collected immediately
+# after completion and will return "not found" on any re-run.
+#
+# Instead, we poll for the consul-bootstrap-acl-token Secret, which is
+# created as a side-effect of the ACL bootstrap process and persists forever.
+# Its existence is the reliable durable signal that the ACL system is ready.
+# ---------------------------------------------------------------------------
+- name: Wait for consul-bootstrap-acl-token Secret to exist
+  command: >
+    kubectl get secret consul-bootstrap-acl-token
+    -n {{ consul_namespace }}
+    --kubeconfig=/home/ubuntu/.kube/config
+  changed_when: false
+  become: false
+  register: acl_bootstrap_ready
+  until: acl_bootstrap_ready.rc == 0
+  retries: 60
+  delay: 5
+
+# ---------------------------------------------------------------------------
+# Step 4c — Wait for connect-injector webhook deployment to be Available
+#
+# The connect-injector will only reach Available once it has received its
+# own ACL service token from the bootstrap process. At this point the
+# MutatingWebhookConfiguration is active and ready to inject sidecars.
+# ---------------------------------------------------------------------------
+- name: Wait for Consul connect-injector deployment to be Available
+  command: >
+    kubectl wait deployment/consul-connect-injector
+    -n {{ consul_namespace }}
+    --for=condition=Available
+    --timeout=180s
+    --kubeconfig=/home/ubuntu/.kube/config
+  changed_when: false
+  become: false
+
+# ---------------------------------------------------------------------------
+# Step 5 — Apply supporting Kubernetes resources
+# ---------------------------------------------------------------------------
+- name: Apply Consul UI Ingress
+  kubernetes.core.k8s:
+    state: present
+    definition: "{{ lookup('template', 'ingress.yaml.j2') | from_yaml }}"
+    kubeconfig: /home/ubuntu/.kube/config
+  become: false
+
+- name: Apply Consul ServiceMonitor
+  kubernetes.core.k8s:
+    state: present
+    definition: "{{ lookup('template', 'servicemonitor.yaml.j2') | from_yaml }}"
+    kubeconfig: /home/ubuntu/.kube/config
+  become: false
+
+- name: Apply Consul Grafana dashboard ConfigMap
+  kubernetes.core.k8s:
+    state: present
+    definition: "{{ lookup('template', 'grafana-dashboard-configmap.yaml.j2') | from_yaml }}"
+    kubeconfig: /home/ubuntu/.kube/config
+  become: false
+
+# ---------------------------------------------------------------------------
+# Step 6 — Read and display ACL bootstrap token
+# ---------------------------------------------------------------------------
+- name: Read Consul bootstrap ACL token secret
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Secret
+    name: consul-bootstrap-acl-token
+    namespace: "{{ consul_namespace }}"
+    kubeconfig: /home/ubuntu/.kube/config
+  register: consul_acl_secret
+  become: false
+  failed_when: false
+
+- name: Display Consul access info
+  debug:
+    msg:
+      - "Consul is ready."
+      - "UI URL         : https://{{ consul_hostname }}"
+      - "ACL Token      : {{ consul_acl_secret.resources[0].data.token | b64decode
+          if consul_acl_secret.resources | length > 0
+          else '(not found - ACLs may still be bootstrapping, check: kubectl get secret consul-bootstrap-acl-token -n consul)' }}"
+      - "Connect Inject : enabled (opt-in via annotation)"
+      - "Annotation     : consul.hashicorp.com/connect-inject: 'true'"

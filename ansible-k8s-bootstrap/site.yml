@@ -3,18 +3,22 @@
 # site.yml — Kubernetes Cluster Bootstrap + Platform Stack Orchestration
 #
 # Execution order:
-#   1. common              → all nodes  (swap, kernel modules, sysctl, packages)
-#   2. container_runtime   → all nodes  (containerd + SystemdCgroup)
-#   3. kubernetes_packages → all nodes  (kubelet, kubeadm, kubectl)
-#   4. master              → masters    (kubeadm init, kubeconfig, join command)
-#   5. worker              → workers    (kubeadm join)
-#   6. cni                 → masters    (Calico manifest, wait for Ready nodes)
-#   7. metrics_server      → masters    (metrics-server + insecure-tls patch)
-#   8. helm                → masters    (Helm v3 binary + 4 chart repos)
-#   9. ingress_nginx        → masters    (NGINX Ingress NodePort 30080/30443)
-#  10. cert_manager        → masters    (cert-manager + self-signed ClusterIssuer)
-#  11. argocd              → masters    (ArgoCD GitOps platform + Ingress)
-#  12. monitoring          → masters    (kube-prometheus-stack: Prometheus + Grafana)
+#   1. common              → all nodes   (swap, kernel modules, sysctl, packages)
+#   2. container_runtime   → all nodes   (containerd + SystemdCgroup)
+#   3. kubernetes_packages → all nodes   (kubelet, kubeadm, kubectl)
+#   4. master              → masters     (kubeadm init, kubeconfig, join command)
+#   5. worker              → workers     (kubeadm join)
+#   6. cni                 → masters     (Calico manifest, wait for Ready nodes)
+#   7. metrics_server      → masters     (metrics-server + insecure-tls patch)
+#   8. helm                → masters     (Helm v3 binary + chart repos)
+#   9. ingress_nginx       → masters     (NGINX Ingress NodePort 30080/30443)
+#  10. cert_manager        → masters     (cert-manager + self-signed ClusterIssuer)
+#  11. argocd              → masters     (ArgoCD GitOps platform + Ingress)
+#  12. monitoring          → masters     (kube-prometheus-stack: Prometheus + Grafana)
+#  13. istio               → masters     (Istio service mesh: base CRDs + istiod)
+#  14. consul              → masters     (Consul: service discovery + Connect mesh)
+#  15. sample_app          → masters     (Demo app: frontend + backend via Consul Connect)
+#  16. consul_vm_agent     → consul_vm   (Consul agent on VMs — conditional, skipped if group empty)
 #
 # Run the full stack:
 #   ansible-playbook -i inventory/hosts.ini site.yml
@@ -22,7 +26,10 @@
 # Run only platform plays (cluster must already exist):
 #   ansible-playbook -i inventory/hosts.ini site.yml --tags platform
 #
-# Prerequisites for platform plays (8-12):
+# Run only Consul+Istio plays (platform must already exist):
+#   ansible-playbook -i inventory/hosts.ini site.yml --tags consul-stack
+#
+# Prerequisites for platform plays (8-16):
 #   ansible-galaxy collection install -r requirements.yml
 # =============================================================================
 
@@ -132,3 +139,56 @@
   tags: platform
   roles:
     - monitoring
+
+# ---------------------------------------------------------------------------
+# Play 11: Install Istio service mesh
+# ---------------------------------------------------------------------------
+- name: Install Istio service mesh (base CRDs + istiod)
+  hosts: masters
+  become: true
+  gather_facts: false
+  tags:
+    - platform
+    - consul-stack
+  roles:
+    - istio
+
+# ---------------------------------------------------------------------------
+# Play 12: Install Consul (service discovery + Connect service mesh)
+# ---------------------------------------------------------------------------
+- name: Install Consul
+  hosts: masters
+  become: true
+  gather_facts: false
+  tags:
+    - platform
+    - consul-stack
+  roles:
+    - consul
+
+# ---------------------------------------------------------------------------
+# Play 13: Deploy Consul Connect sample application
+# ---------------------------------------------------------------------------
+- name: Deploy sample application (Consul Connect demo)
+  hosts: masters
+  become: true
+  gather_facts: false
+  tags:
+    - platform
+    - consul-stack
+  roles:
+    - sample_app
+
+# ---------------------------------------------------------------------------
+# Play 14: Install Consul agent on VM nodes (conditional)
+# Only runs if the [consul_vm] group has hosts in the inventory.
+# ---------------------------------------------------------------------------
+- name: Install Consul agent on VM nodes
+  hosts: consul_vm
+  become: true
+  gather_facts: true
+  tags:
+    - consul-stack
+    - consul-vm
+  roles:
+    - consul_vm_agent

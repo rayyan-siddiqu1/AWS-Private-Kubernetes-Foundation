@@ -1,0 +1,26 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: consul
+  namespace: "{{ argocd_namespace }}"
+  # Finalizer ensures ArgoCD deletes child resources when the Application is deleted.
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: "{{ consul_gitops_repo_url }}"
+    targetRevision: "{{ consul_gitops_target_revision }}"
+    path: gitops/consul
+    helm:
+      valueFiles:
+        - values.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: "{{ consul_namespace }}"
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

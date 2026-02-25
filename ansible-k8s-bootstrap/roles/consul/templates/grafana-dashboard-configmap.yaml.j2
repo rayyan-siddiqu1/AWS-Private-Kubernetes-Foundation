@@ -1,0 +1,89 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: consul-grafana-dashboard
+  namespace: "{{ monitoring_namespace }}"
+  labels:
+    # Grafana sidecar watches for ConfigMaps with this label and auto-imports them.
+    grafana_dashboard: "1"
+data:
+  consul-dashboard.json: |
+    {
+      "__inputs": [],
+      "__requires": [
+        {"type": "grafana", "id": "grafana", "name": "Grafana", "version": "8.0.0"},
+        {"type": "datasource", "id": "prometheus", "name": "Prometheus", "version": "1.0.0"}
+      ],
+      "annotations": {"list": []},
+      "description": "Consul cluster metrics for kube-prometheus-stack",
+      "editable": true,
+      "gnetId": null,
+      "graphTooltip": 0,
+      "id": null,
+      "links": [],
+      "panels": [
+        {
+          "datasource": "Prometheus",
+          "fieldConfig": {
+            "defaults": {"color": {"mode": "thresholds"}, "mappings": [], "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]}},
+            "overrides": []
+          },
+          "gridPos": {"h": 4, "w": 4, "x": 0, "y": 0},
+          "id": 1,
+          "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "orientation": "auto", "textMode": "auto", "colorMode": "value", "graphMode": "none"},
+          "targets": [{"expr": "consul_raft_peers", "legendFormat": "Raft Peers", "refId": "A"}],
+          "title": "Raft Peers",
+          "type": "stat"
+        },
+        {
+          "datasource": "Prometheus",
+          "fieldConfig": {
+            "defaults": {"color": {"mode": "thresholds"}, "mappings": [], "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "red", "value": 1}]}},
+            "overrides": []
+          },
+          "gridPos": {"h": 4, "w": 4, "x": 4, "y": 0},
+          "id": 2,
+          "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "orientation": "auto", "textMode": "auto", "colorMode": "value", "graphMode": "none"},
+          "targets": [{"expr": "consul_health_service_status{status!=\"passing\"}", "legendFormat": "Failing Checks", "refId": "A"}],
+          "title": "Failing Health Checks",
+          "type": "stat"
+        },
+        {
+          "datasource": "Prometheus",
+          "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []},
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 4},
+          "id": 3,
+          "options": {"legend": {"displayMode": "list", "placement": "bottom"}, "tooltip": {"mode": "single"}},
+          "targets": [
+            {"expr": "rate(consul_rpc_request[5m])", "legendFormat": "RPC requests/s", "refId": "A"},
+            {"expr": "rate(consul_rpc_request_error[5m])", "legendFormat": "RPC errors/s", "refId": "B"}
+          ],
+          "title": "RPC Request Rate",
+          "type": "timeseries"
+        },
+        {
+          "datasource": "Prometheus",
+          "fieldConfig": {"defaults": {"unit": "ms"}, "overrides": []},
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 4},
+          "id": 4,
+          "options": {"legend": {"displayMode": "list", "placement": "bottom"}, "tooltip": {"mode": "single"}},
+          "targets": [
+            {"expr": "consul_raft_commitTime * 1000", "legendFormat": "Raft commit time (ms)", "refId": "A"},
+            {"expr": "consul_raft_leader_lastContact * 1000", "legendFormat": "Leader last contact (ms)", "refId": "B"}
+          ],
+          "title": "Raft Performance",
+          "type": "timeseries"
+        }
+      ],
+      "refresh": "30s",
+      "schemaVersion": 30,
+      "style": "dark",
+      "tags": ["consul"],
+      "templating": {"list": []},
+      "time": {"from": "now-1h", "to": "now"},
+      "timepicker": {},
+      "timezone": "browser",
+      "title": "Consul Cluster",
+      "uid": "consul-cluster",
+      "version": 1
+    }

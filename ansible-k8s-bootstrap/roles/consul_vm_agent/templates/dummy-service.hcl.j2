@@ -1,0 +1,28 @@
+# Dummy service registration — simulates a legacy VM-based API
+# registered in Consul for service discovery demonstration.
+#
+# In a real scenario this would register an actual running application.
+# The health check uses a TCP check on the declared port; if nothing is
+# actually listening on 8080 the check will fail (critical) — that is
+# expected for a simulation and does not affect the demo.
+
+service {
+  name = "legacy-api"
+  id   = "legacy-api-{{ inventory_hostname }}"
+  port = 8080
+  tags = ["vm", "legacy", "demo"]
+
+  meta {
+    host        = "{{ inventory_hostname }}"
+    environment = "dev"
+    provisioner = "ansible"
+  }
+
+  check {
+    id       = "legacy-api-tcp"
+    name     = "TCP check on port 8080"
+    tcp      = "127.0.0.1:8080"
+    interval = "30s"
+    timeout  = "5s"
+  }
+}

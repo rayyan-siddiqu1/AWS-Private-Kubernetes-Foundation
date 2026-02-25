@@ -1,0 +1,22 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: sample-app
+  namespace: "{{ argocd_namespace }}"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: "{{ sample_app_gitops_repo_url }}"
+    targetRevision: "{{ sample_app_gitops_target_revision }}"
+    path: gitops/sample_app
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: "{{ sample_app_namespace }}"
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

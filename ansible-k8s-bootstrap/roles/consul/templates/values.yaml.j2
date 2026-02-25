@@ -1,0 +1,70 @@
+# Consul Helm values
+# Chart: hashicorp/consul {{ consul_chart_version }}
+# Datacenter: dc1
+# ACLs: enabled (bootstrap token auto-created)
+# TLS: disabled (edge TLS via NGINX Ingress + cert-manager)
+# Storage: local-path (Rancher local-path-provisioner)
+
+global:
+  name: consul
+  datacenter: dc1
+
+  # ACL system — enables token-based access control.
+  # The bootstrap token is written to the consul-bootstrap-acl-token secret.
+  acls:
+    manageSystemACLs: true
+
+  # TLS disabled — consistent with ArgoCD/Grafana pattern.
+  # NGINX Ingress terminates TLS at the edge.
+  tls:
+    enabled: false
+
+  # Prometheus metrics
+  metrics:
+    enabled: true
+    enableAgentMetrics: true
+    agentMetricsRetentionTime: 1m
+
+server:
+  replicas: 3
+  storage: 10Gi
+  storageClass: local-path
+
+  # Allow servers to schedule on the control-plane node (NoSchedule taint).
+  # With a 3-node cluster (1 control plane + 2 workers) the default
+  # anti-affinity rule would prevent 3 Consul servers from all being scheduled,
+  # so we also clear affinity to let the scheduler place them freely.
+  tolerations: |
+    - key: "node-role.kubernetes.io/control-plane"
+      operator: "Exists"
+      effect: "NoSchedule"
+
+  # Clear the default required anti-affinity so all 3 servers can fit
+  # across 3 nodes in a small lab cluster.
+  affinity: ""
+
+  resources:
+    requests:
+      memory: 100Mi
+      cpu: 100m
+    limits:
+      memory: 256Mi
+      cpu: 500m
+
+ui:
+  enabled: true
+  service:
+    type: ClusterIP
+
+connectInject:
+  enabled: true
+  # default: false — opt-in per pod via annotation:
+  #   consul.hashicorp.com/connect-inject: "true"
+  default: false
+  resources:
+    requests:
+      memory: 50Mi
+      cpu: 50m
+    limits:
+      memory: 128Mi
+      cpu: 200m

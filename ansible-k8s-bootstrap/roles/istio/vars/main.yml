@@ -1,0 +1,8 @@
+---
+# istio/vars/main.yml — role-internal defaults
+# Override in group_vars/all.yml for global visibility.
+# These are kept here so the role is self-contained if used independently.
+
+istio_namespace: istio-system
+istio_base_release_name: istio-base
+istio_istiod_release_name: istiod

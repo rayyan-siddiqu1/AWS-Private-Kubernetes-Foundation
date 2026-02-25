@@ -1,0 +1,26 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: consul
+  namespace: "{{ consul_namespace }}"
+  labels:
+    # This label is matched by kube-prometheus-stack's serviceMonitorSelector.
+    # The monitoring role sets matchLabels: {} (match all) so any ServiceMonitor
+    # in any namespace is picked up by Prometheus automatically.
+    release: "{{ monitoring_release_name }}"
+spec:
+  namespaceSelector:
+    matchNames:
+      - "{{ consul_namespace }}"
+  selector:
+    matchLabels:
+      app: consul
+      component: server
+  endpoints:
+    - port: http
+      path: /v1/agent/metrics
+      params:
+        format:
+          - prometheus
+      interval: 30s
+      scrapeTimeout: 10s

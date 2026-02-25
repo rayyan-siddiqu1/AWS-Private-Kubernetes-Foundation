@@ -1,0 +1,24 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: sample-app
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    # IMPORTANT: Update repoURL to your GitHub repository URL before activating GitOps mode.
+    # Example: https://github.com/your-username/aws-k8s-foundation
+    repoURL: https://github.com/PLACEHOLDER/aws-k8s-foundation
+    targetRevision: HEAD
+    path: gitops/sample_app
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: test-app
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
