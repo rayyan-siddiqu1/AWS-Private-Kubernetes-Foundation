@@ -1,0 +1,8 @@
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: "{{ cert_manager_cluster_issuer_name }}"
+spec:
+  # Self-signed: the issuer signs certificates with themselves.
+  # All Ingress TLS secrets in this lab are self-signed.
+  selfSigned: {}

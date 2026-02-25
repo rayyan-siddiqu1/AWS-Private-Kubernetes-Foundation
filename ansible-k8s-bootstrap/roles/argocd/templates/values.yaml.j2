@@ -1,0 +1,14 @@
+global:
+  domain: "{{ argocd_hostname }}"
+
+configs:
+  params:
+    # Run ArgoCD without TLS on the pod. NGINX Ingress terminates TLS.
+    # This avoids conflicts between ArgoCD's built-in TLS and NGINX.
+    server.insecure: "true"
+
+server:
+  # Ingress is managed separately via kubernetes.core.k8s (ingress.yaml.j2)
+  # so it is independently visible and not tied to the Helm release lifecycle.
+  ingress:
+    enabled: false

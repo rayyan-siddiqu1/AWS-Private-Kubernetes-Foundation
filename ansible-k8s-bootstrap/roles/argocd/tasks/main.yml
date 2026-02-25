@@ -1,0 +1,78 @@
+---
+# =============================================================================
+# argocd/tasks/main.yml
+#
+# Installs ArgoCD via the argo/argo-cd Helm chart.
+#
+# TLS strategy:
+#   ArgoCD server runs in insecure (HTTP) mode. NGINX Ingress terminates TLS
+#   using a cert-manager self-signed certificate. This avoids double-TLS and
+#   gRPC passthrough complexity in a lab environment.
+#
+# Ingress is managed separately (not via chart values) so the Ingress object
+# is visible and modifiable via kubernetes.core.k8s independently of the release.
+#
+# Idempotency:
+#   - Helm release: kubernetes.core.helm is idempotent
+#   - Ingress:      kubernetes.core.k8s (state: present) is idempotent
+#   - Password read: changed_when: false, failed_when: false
+# =============================================================================
+
+- name: Install ArgoCD
+  kubernetes.core.helm:
+    name: "{{ argocd_release_name }}"
+    chart_ref: argo/argo-cd
+    chart_version: "{{ argocd_chart_version }}"
+    release_namespace: "{{ argocd_namespace }}"
+    create_namespace: true
+    values: "{{ lookup('template', 'values.yaml.j2') | from_yaml }}"
+    binary_path: "{{ helm_binary_path }}"
+    kubeconfig: /home/ubuntu/.kube/config
+    wait: true
+    wait_timeout: 300
+  become: false
+
+- name: Wait for ArgoCD server deployment to be Available
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: Deployment
+    name: "{{ argocd_release_name }}-server"
+    namespace: "{{ argocd_namespace }}"
+    wait: true
+    wait_condition:
+      type: Available
+      status: "True"
+    wait_timeout: 300
+    kubeconfig: /home/ubuntu/.kube/config
+  become: false
+
+- name: Apply ArgoCD Ingress
+  kubernetes.core.k8s:
+    state: present
+    definition: "{{ lookup('template', 'ingress.yaml.j2') | from_yaml }}"
+    kubeconfig: /home/ubuntu/.kube/config
+  become: false
+
+# The initial admin secret is auto-generated on first install and can be
+# deleted by the operator after the password is changed. Soft-fail here so
+# subsequent idempotent runs do not fail if the secret is gone.
+- name: Read ArgoCD initial admin secret
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Secret
+    name: argocd-initial-admin-secret
+    namespace: "{{ argocd_namespace }}"
+    kubeconfig: /home/ubuntu/.kube/config
+  register: argocd_admin_secret
+  become: false
+  failed_when: false
+
+- name: Display ArgoCD access info
+  debug:
+    msg:
+      - "ArgoCD is ready."
+      - "URL      : https://{{ argocd_hostname }}"
+      - "Username : admin"
+      - "Password : {{ argocd_admin_secret.resources[0].data.password | b64decode
+          if argocd_admin_secret.resources | length > 0
+          else '(secret deleted — use the password you set after first login)' }}"

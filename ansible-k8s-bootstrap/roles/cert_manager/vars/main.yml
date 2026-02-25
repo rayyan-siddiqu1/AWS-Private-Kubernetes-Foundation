@@ -1,0 +1,8 @@
+---
+# =============================================================================
+# cert_manager/vars/main.yml
+#
+# All user-facing configuration is in group_vars/all.yml:
+#   cert_manager_chart_version, cert_manager_namespace,
+#   cert_manager_release_name, cert_manager_cluster_issuer_name
+# =============================================================================

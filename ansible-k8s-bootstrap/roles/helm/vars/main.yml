@@ -1,0 +1,10 @@
+---
+# =============================================================================
+# helm/vars/main.yml
+#
+# Role-internal variables that are not intended to be user-overridden.
+# User-facing configuration (helm_version, helm_repos) lives in group_vars/all.yml.
+# =============================================================================
+
+# Official Helm install script — downloads and installs the helm binary to /usr/local/bin/
+helm_install_script_url: "https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3"

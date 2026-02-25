@@ -1,0 +1,30 @@
+grafana:
+  adminPassword: "{{ grafana_admin_password }}"
+
+  # Ingress is managed separately via kubernetes.core.k8s (grafana-ingress.yaml.j2).
+  ingress:
+    enabled: false
+
+  # Persistence requires a StorageClass. Disabled for the base lab setup.
+  # Set to true and configure storageClassName for production use.
+  persistence:
+    enabled: false
+
+prometheus:
+  prometheusSpec:
+    # Allow Prometheus to scrape ServiceMonitors from all namespaces.
+    # Required to pick up the NGINX Ingress ServiceMonitor.
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+
+    retention: 7d
+
+    resources:
+      requests:
+        memory: 400Mi
+      limits:
+        memory: 1Gi
+
+alertmanager:
+  # Disabled for lab — reduces resource usage. Enable for production.
+  enabled: false

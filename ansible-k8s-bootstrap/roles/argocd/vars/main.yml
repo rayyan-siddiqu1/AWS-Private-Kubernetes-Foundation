@@ -1,0 +1,8 @@
+---
+# =============================================================================
+# argocd/vars/main.yml
+#
+# All user-facing configuration is in group_vars/all.yml:
+#   argocd_chart_version, argocd_namespace, argocd_release_name,
+#   argocd_hostname
+# =============================================================================

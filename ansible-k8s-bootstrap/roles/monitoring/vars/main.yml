@@ -1,0 +1,8 @@
+---
+# =============================================================================
+# monitoring/vars/main.yml
+#
+# All user-facing configuration is in group_vars/all.yml:
+#   kube_prometheus_stack_chart_version, monitoring_namespace,
+#   monitoring_release_name, grafana_hostname, grafana_admin_password
+# =============================================================================

@@ -1,0 +1,20 @@
+controller:
+  service:
+    type: NodePort
+    nodePorts:
+      http: {{ ingress_nginx_http_nodeport }}
+      https: {{ ingress_nginx_https_nodeport }}
+
+  metrics:
+    enabled: true
+    serviceMonitor:
+      # Picked up automatically by kube-prometheus-stack when installed.
+      enabled: true
+      namespace: "{{ ingress_nginx_namespace }}"
+      namespaceSelector:
+        any: true
+
+  config:
+    use-forwarded-headers: "true"
+    compute-full-forwarded-for: "true"
+    use-proxy-protocol: "false"

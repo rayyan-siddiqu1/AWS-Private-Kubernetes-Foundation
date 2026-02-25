@@ -352,11 +352,12 @@ The `ansible-k8s-bootstrap/` directory contains a fully modular, idempotent Ansi
 ```
 ansible-k8s-bootstrap/
 ├── ansible.cfg                  SSH settings, privilege escalation, fact caching
-├── site.yml                     Orchestration — 5 plays in dependency order
+├── site.yml                     Orchestration — 10 plays in dependency order
+├── requirements.yml             Collection dependencies (kubernetes.core)
 ├── inventory/
 │   └── hosts.ini                Static inventory (masters + workers)
 ├── group_vars/
-│   ├── all.yml                  Shared vars: k8s version, CIDRs, manifests
+│   ├── all.yml                  Shared vars: k8s version, CIDRs, chart versions
 │   ├── masters.yml              Control-plane-specific vars
 │   └── workers.yml              ProxyJump config (workers in private subnet)
 └── roles/
@@ -366,7 +367,12 @@ ansible-k8s-bootstrap/
     ├── master/                  kubeadm init, kubeconfig, join command
     ├── worker/                  kubeadm join (reads command from master)
     ├── cni/                     Calico v3.29.1 manifest, waits for Ready nodes
-    └── metrics_server/          metrics-server + --kubelet-insecure-tls patch
+    ├── metrics_server/          metrics-server + --kubelet-insecure-tls patch
+    ├── helm/                    Helm v3 binary + 4 chart repos
+    ├── ingress_nginx/           NGINX Ingress Controller (NodePort 30080/30443)
+    ├── cert_manager/            cert-manager + self-signed ClusterIssuer
+    ├── argocd/                  ArgoCD GitOps platform + Ingress
+    └── monitoring/              kube-prometheus-stack (Prometheus + Grafana)
 ```
 
 ### Prerequisites
@@ -374,6 +380,10 @@ ansible-k8s-bootstrap/
 ```bash
 # Install Ansible (>= 2.14 recommended)
 pip install ansible
+
+# Install required Ansible collections (kubernetes.core — needed for platform plays)
+cd ansible-k8s-bootstrap
+ansible-galaxy collection install -r requirements.yml
 
 # Verify SSH key is loaded (needed for ProxyJump through master to workers)
 ssh-add ~/.ssh/terraform-keypair.pem
@@ -440,8 +450,11 @@ ansible all -i inventory/hosts.ini -m ping
 # Dry run
 ansible-playbook -i inventory/hosts.ini site.yml --check
 
-# Full deployment (~8-12 minutes)
+# Full deployment — cluster bootstrap + platform stack (~15-20 minutes)
 ansible-playbook -i inventory/hosts.ini site.yml
+
+# Platform plays only (cluster must already exist):
+ansible-playbook -i inventory/hosts.ini site.yml --tags platform
 ```
 
 ### Validate the Cluster
@@ -461,6 +474,25 @@ kubectl get pods -n kube-system
 kubectl top nodes
 ```
 
+### Platform Stack Access
+
+After the full playbook completes, the following tools are accessible using the master node's **public IP** in place of `<MASTER_PUBLIC_IP>`. Hostnames resolve via [nip.io](https://nip.io) — no DNS configuration needed.
+
+| Service | URL | Credentials |
+|---------|-----|-------------|
+| ArgoCD | `https://argocd.<MASTER_PUBLIC_IP>.nip.io:30443` | admin / (printed by playbook) |
+| Grafana | `https://grafana.<MASTER_PUBLIC_IP>.nip.io:30443` | admin / prom-operator |
+| NGINX Ingress HTTP | `http://<MASTER_PUBLIC_IP>:30080` | — |
+| NGINX Ingress HTTPS | `https://<MASTER_PUBLIC_IP>:30443` | — |
+
+> TLS certificates are self-signed. Browsers will show a security warning — click "Advanced" and proceed. This is expected for a lab with a self-signed ClusterIssuer.
+
+> The ArgoCD initial admin password is printed by the playbook as a `debug` task. It can also be retrieved manually:
+> ```bash
+> kubectl -n argocd get secret argocd-initial-admin-secret \
+>   -o jsonpath='{.data.password}' | base64 -d
+> ```
+
 ### Role Responsibilities
 
 | Role | Runs On | Key Actions |
@@ -472,6 +504,11 @@ kubectl top nodes
 | `worker` | Workers | Fetch join command from master via `slurp`, run `kubeadm join` (idempotent) |
 | `cni` | Control plane | Apply Calico manifest, wait for all nodes `Ready` |
 | `metrics_server` | Control plane | Apply manifest, patch `--kubelet-insecure-tls`, verify `kubectl top nodes` |
+| `helm` | Control plane | Install Helm v3 binary, install `python3-kubernetes`, add 4 chart repositories |
+| `ingress_nginx` | Control plane | Install NGINX Ingress via Helm, NodePort 30080/30443, metrics ServiceMonitor enabled |
+| `cert_manager` | Control plane | Install cert-manager via Helm (with CRDs), create self-signed ClusterIssuer |
+| `argocd` | Control plane | Install ArgoCD via Helm (insecure mode), apply Ingress, print admin password |
+| `monitoring` | Control plane | Install kube-prometheus-stack via Helm, apply Grafana Ingress |
 
 ### Idempotency Design
 
@@ -483,6 +520,11 @@ kubectl top nodes
 | GPG keys re-dearmored | `args: creates:` on shell task |
 | metrics-server double-patched | `when: 'kubelet-insecure-tls' not in ms_args.stdout` |
 | sysctl double-applied | Handler fires only when `/etc/sysctl.d/k8s.conf` changes |
+| Helm binary reinstalled | `helm version --short` — skip install if already at requested version |
+| Helm chart re-deployed | `kubernetes.core.helm` performs `helm upgrade --install` — safe to re-run |
+| ClusterIssuer re-applied | `kubernetes.core.k8s` with `state: present` — no-op if object unchanged |
+| Ingress objects re-applied | `kubernetes.core.k8s` with `state: present` — no-op if object unchanged |
+| ArgoCD admin secret missing | `failed_when: false` — soft-fail if secret was deleted after first login |
 
 ### Private Subnet SSH Access
 

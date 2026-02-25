@@ -1,6 +1,6 @@
 ---
 # =============================================================================
-# site.yml — Kubernetes Cluster Bootstrap Orchestration
+# site.yml — Kubernetes Cluster Bootstrap + Platform Stack Orchestration
 #
 # Execution order:
 #   1. common              → all nodes  (swap, kernel modules, sysctl, packages)
@@ -10,6 +10,20 @@
 #   5. worker              → workers    (kubeadm join)
 #   6. cni                 → masters    (Calico manifest, wait for Ready nodes)
 #   7. metrics_server      → masters    (metrics-server + insecure-tls patch)
+#   8. helm                → masters    (Helm v3 binary + 4 chart repos)
+#   9. ingress_nginx        → masters    (NGINX Ingress NodePort 30080/30443)
+#  10. cert_manager        → masters    (cert-manager + self-signed ClusterIssuer)
+#  11. argocd              → masters    (ArgoCD GitOps platform + Ingress)
+#  12. monitoring          → masters    (kube-prometheus-stack: Prometheus + Grafana)
+#
+# Run the full stack:
+#   ansible-playbook -i inventory/hosts.ini site.yml
+#
+# Run only platform plays (cluster must already exist):
+#   ansible-playbook -i inventory/hosts.ini site.yml --tags platform
+#
+# Prerequisites for platform plays (8-12):
+#   ansible-galaxy collection install -r requirements.yml
 # =============================================================================
 
 # ---------------------------------------------------------------------------
@@ -63,3 +77,58 @@
   gather_facts: false
   roles:
     - metrics_server
+
+# ---------------------------------------------------------------------------
+# Play 6: Install Helm on the control plane
+# ---------------------------------------------------------------------------
+- name: Install Helm and configure repositories
+  hosts: masters
+  become: true
+  gather_facts: false
+  tags: platform
+  roles:
+    - helm
+
+# ---------------------------------------------------------------------------
+# Play 7: Install NGINX Ingress Controller
+# ---------------------------------------------------------------------------
+- name: Install NGINX Ingress Controller (NodePort 30080/30443)
+  hosts: masters
+  become: true
+  gather_facts: false
+  tags: platform
+  roles:
+    - ingress_nginx
+
+# ---------------------------------------------------------------------------
+# Play 8: Install cert-manager and configure self-signed ClusterIssuer
+# ---------------------------------------------------------------------------
+- name: Install cert-manager and configure self-signed ClusterIssuer
+  hosts: masters
+  become: true
+  gather_facts: false
+  tags: platform
+  roles:
+    - cert_manager
+
+# ---------------------------------------------------------------------------
+# Play 9: Install ArgoCD GitOps platform
+# ---------------------------------------------------------------------------
+- name: Install ArgoCD
+  hosts: masters
+  become: true
+  gather_facts: false
+  tags: platform
+  roles:
+    - argocd
+
+# ---------------------------------------------------------------------------
+# Play 10: Install kube-prometheus-stack (Prometheus + Grafana)
+# ---------------------------------------------------------------------------
+- name: Install kube-prometheus-stack
+  hosts: masters
+  become: true
+  gather_facts: false
+  tags: platform
+  roles:
+    - monitoring

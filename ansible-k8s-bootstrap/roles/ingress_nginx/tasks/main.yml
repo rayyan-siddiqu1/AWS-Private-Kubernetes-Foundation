@@ -1,0 +1,51 @@
+---
+# =============================================================================
+# ingress_nginx/tasks/main.yml
+#
+# Installs NGINX Ingress Controller via Helm in NodePort mode.
+#
+# NodePorts:
+#   HTTP  → 30080
+#   HTTPS → 30443
+#
+# Metrics are enabled so kube-prometheus-stack can scrape the controller
+# via a ServiceMonitor once the monitoring stack is installed.
+#
+# Idempotency:
+#   kubernetes.core.helm performs helm upgrade --install, which is idempotent.
+# =============================================================================
+
+- name: Install NGINX Ingress Controller
+  kubernetes.core.helm:
+    name: "{{ ingress_nginx_release_name }}"
+    chart_ref: ingress-nginx/ingress-nginx
+    chart_version: "{{ ingress_nginx_chart_version }}"
+    release_namespace: "{{ ingress_nginx_namespace }}"
+    create_namespace: true
+    values: "{{ lookup('template', 'values.yaml.j2') | from_yaml }}"
+    binary_path: "{{ helm_binary_path }}"
+    kubeconfig: /home/ubuntu/.kube/config
+    wait: true
+    wait_timeout: 300
+  become: false
+
+- name: Wait for NGINX Ingress controller deployment to be Available
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: Deployment
+    name: "{{ ingress_nginx_release_name }}-controller"
+    namespace: "{{ ingress_nginx_namespace }}"
+    wait: true
+    wait_condition:
+      type: Available
+      status: "True"
+    wait_timeout: 300
+    kubeconfig: /home/ubuntu/.kube/config
+  become: false
+
+- name: Display NGINX Ingress access info
+  debug:
+    msg:
+      - "NGINX Ingress NodePort is ready."
+      - "HTTP  : http://{{ hostvars[groups['masters'][0]]['ansible_host'] }}:{{ ingress_nginx_http_nodeport }}"
+      - "HTTPS : https://{{ hostvars[groups['masters'][0]]['ansible_host'] }}:{{ ingress_nginx_https_nodeport }}"

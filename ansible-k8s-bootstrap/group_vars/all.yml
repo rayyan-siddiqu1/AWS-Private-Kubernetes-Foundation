@@ -38,3 +38,63 @@ metrics_server_manifest_url: "https://github.com/kubernetes-sigs/metrics-server/
 # ---------------------------------------------------------------------------
 # File on the master that stores the kubeadm join command for workers to consume
 join_command_file: /tmp/kubeadm_join_command.sh
+
+# ---------------------------------------------------------------------------
+# Platform stack — ingress base domain
+# ---------------------------------------------------------------------------
+# nip.io resolves <ip>.nip.io to <ip>. Provides free wildcard DNS for lab
+# ingress hostnames without requiring a registered domain or Route 53.
+# Constructed at runtime from the master's public IP in the inventory.
+ingress_base_domain: "{{ hostvars[groups['masters'][0]]['ansible_host'] }}.nip.io"
+
+# ---------------------------------------------------------------------------
+# Helm
+# ---------------------------------------------------------------------------
+helm_version: "3.17.0"
+helm_binary_path: /usr/local/bin/helm
+
+helm_repos:
+  - name: ingress-nginx
+    url: https://kubernetes.github.io/ingress-nginx
+  - name: jetstack
+    url: https://charts.jetstack.io
+  - name: argo
+    url: https://argoproj.github.io/argo-helm
+  - name: prometheus-community
+    url: https://prometheus-community.github.io/helm-charts
+
+# ---------------------------------------------------------------------------
+# NGINX Ingress Controller
+# ---------------------------------------------------------------------------
+ingress_nginx_chart_version: "4.11.3"
+ingress_nginx_namespace: ingress-nginx
+ingress_nginx_release_name: ingress-nginx
+ingress_nginx_http_nodeport: 30080
+ingress_nginx_https_nodeport: 30443
+
+# ---------------------------------------------------------------------------
+# cert-manager
+# ---------------------------------------------------------------------------
+cert_manager_chart_version: "v1.16.2"
+cert_manager_namespace: cert-manager
+cert_manager_release_name: cert-manager
+# Name of the ClusterIssuer referenced by all Ingress TLS annotations.
+cert_manager_cluster_issuer_name: selfsigned-issuer
+
+# ---------------------------------------------------------------------------
+# ArgoCD
+# ---------------------------------------------------------------------------
+argocd_chart_version: "7.7.3"
+argocd_namespace: argocd
+argocd_release_name: argocd
+argocd_hostname: "argocd.{{ ingress_base_domain }}"
+
+# ---------------------------------------------------------------------------
+# Monitoring — kube-prometheus-stack (Prometheus + Grafana)
+# ---------------------------------------------------------------------------
+kube_prometheus_stack_chart_version: "67.9.0"
+monitoring_namespace: monitoring
+monitoring_release_name: kube-prometheus-stack
+grafana_hostname: "grafana.{{ ingress_base_domain }}"
+# Change this before deploying to a non-lab environment.
+grafana_admin_password: "prom-operator"

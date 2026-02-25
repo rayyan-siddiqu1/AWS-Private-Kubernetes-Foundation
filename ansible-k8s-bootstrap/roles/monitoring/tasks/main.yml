@@ -1,0 +1,61 @@
+---
+# =============================================================================
+# monitoring/tasks/main.yml
+#
+# Installs kube-prometheus-stack via the prometheus-community Helm chart.
+# Includes: Prometheus, Grafana, node-exporter, kube-state-metrics.
+# AlertManager is disabled for the lab (reduces resource usage).
+#
+# Grafana is exposed via a separate Ingress (grafana-ingress.yaml.j2) using
+# a cert-manager self-signed certificate.
+#
+# ServiceMonitor selector is widened so Prometheus automatically picks up
+# the NGINX Ingress ServiceMonitor created by the ingress_nginx role.
+#
+# Idempotency:
+#   - Helm release: kubernetes.core.helm is idempotent
+#   - Ingress:      kubernetes.core.k8s (state: present) is idempotent
+# =============================================================================
+
+- name: Install kube-prometheus-stack
+  kubernetes.core.helm:
+    name: "{{ monitoring_release_name }}"
+    chart_ref: prometheus-community/kube-prometheus-stack
+    chart_version: "{{ kube_prometheus_stack_chart_version }}"
+    release_namespace: "{{ monitoring_namespace }}"
+    create_namespace: true
+    values: "{{ lookup('template', 'values.yaml.j2') | from_yaml }}"
+    binary_path: "{{ helm_binary_path }}"
+    kubeconfig: /home/ubuntu/.kube/config
+    wait: true
+    wait_timeout: 600
+  become: false
+
+- name: Wait for Grafana deployment to be Available
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: Deployment
+    name: "{{ monitoring_release_name }}-grafana"
+    namespace: "{{ monitoring_namespace }}"
+    wait: true
+    wait_condition:
+      type: Available
+      status: "True"
+    wait_timeout: 300
+    kubeconfig: /home/ubuntu/.kube/config
+  become: false
+
+- name: Apply Grafana Ingress
+  kubernetes.core.k8s:
+    state: present
+    definition: "{{ lookup('template', 'grafana-ingress.yaml.j2') | from_yaml }}"
+    kubeconfig: /home/ubuntu/.kube/config
+  become: false
+
+- name: Display monitoring access info
+  debug:
+    msg:
+      - "Monitoring stack is ready."
+      - "Grafana URL  : https://{{ grafana_hostname }}"
+      - "Username     : admin"
+      - "Password     : {{ grafana_admin_password }}"

@@ -1,0 +1,67 @@
+---
+# =============================================================================
+# cert_manager/tasks/main.yml
+#
+# Installs cert-manager with CRDs and creates a self-signed ClusterIssuer
+# named "selfsigned-issuer" for use by Ingress TLS in the lab.
+#
+# Sequence:
+#   1. Install cert-manager chart (includes CRDs via crds.enabled=true)
+#   2. Wait for webhook deployment to be Available (webhook validates Issuer CRs)
+#   3. Wait for the ClusterIssuer CRD to be Established (API server must know it)
+#   4. Apply the self-signed ClusterIssuer
+#
+# Idempotency:
+#   - Helm release: kubernetes.core.helm is idempotent
+#   - ClusterIssuer: kubernetes.core.k8s is idempotent (state: present)
+# =============================================================================
+
+- name: Install cert-manager
+  kubernetes.core.helm:
+    name: "{{ cert_manager_release_name }}"
+    chart_ref: jetstack/cert-manager
+    chart_version: "{{ cert_manager_chart_version }}"
+    release_namespace: "{{ cert_manager_namespace }}"
+    create_namespace: true
+    values: "{{ lookup('template', 'values.yaml.j2') | from_yaml }}"
+    binary_path: "{{ helm_binary_path }}"
+    kubeconfig: /home/ubuntu/.kube/config
+    wait: true
+    wait_timeout: 300
+  become: false
+
+- name: Wait for cert-manager webhook deployment to be Available
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: Deployment
+    name: cert-manager-webhook
+    namespace: "{{ cert_manager_namespace }}"
+    wait: true
+    wait_condition:
+      type: Available
+      status: "True"
+    wait_timeout: 300
+    kubeconfig: /home/ubuntu/.kube/config
+  become: false
+
+# The webhook validates ClusterIssuer objects. We must wait for the CRD to be
+# fully established in the API server before attempting to create the resource.
+- name: Wait for ClusterIssuer CRD to be Established
+  kubernetes.core.k8s_info:
+    api_version: apiextensions.k8s.io/v1
+    kind: CustomResourceDefinition
+    name: clusterissuers.cert-manager.io
+    wait: true
+    wait_condition:
+      type: Established
+      status: "True"
+    wait_timeout: 120
+    kubeconfig: /home/ubuntu/.kube/config
+  become: false
+
+- name: Apply self-signed ClusterIssuer
+  kubernetes.core.k8s:
+    state: present
+    definition: "{{ lookup('template', 'cluster-issuer.yaml.j2') | from_yaml }}"
+    kubeconfig: /home/ubuntu/.kube/config
+  become: false

@@ -1,0 +1,9 @@
+---
+# =============================================================================
+# ingress_nginx/vars/main.yml
+#
+# All user-facing configuration is in group_vars/all.yml:
+#   ingress_nginx_chart_version, ingress_nginx_namespace,
+#   ingress_nginx_release_name, ingress_nginx_http_nodeport,
+#   ingress_nginx_https_nodeport
+# =============================================================================

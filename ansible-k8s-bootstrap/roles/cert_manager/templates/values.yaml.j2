@@ -1,0 +1,9 @@
+crds:
+  # Install CRDs as part of the Helm release (cert-manager >= 1.15).
+  enabled: true
+  # Keep CRDs when the release is deleted — prevents accidental data loss.
+  keep: true
+
+global:
+  leaderElection:
+    namespace: "{{ cert_manager_namespace }}"
