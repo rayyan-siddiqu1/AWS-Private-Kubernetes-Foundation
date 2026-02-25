@@ -1,0 +1,92 @@
+---
+# =============================================================================
+# master/tasks/main.yml
+#
+# Bootstraps the Kubernetes control plane with kubeadm, configures kubectl
+# for the ubuntu user, and produces a join command for workers.
+#
+# Idempotency: the entire init block is gated on the absence of
+# /etc/kubernetes/admin.conf — if this file exists, kubeadm already ran.
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Hostname resolution — kubeadm preflight checks that --node-name resolves
+# locally. The EC2 instance hostname is ip-10-x-x-x, not the inventory alias.
+# Adding the alias to /etc/hosts satisfies the check without changing the
+# actual system hostname.
+# ---------------------------------------------------------------------------
+- name: Ensure node name resolves locally for kubeadm preflight
+  lineinfile:
+    path: /etc/hosts
+    line: "127.0.1.1 {{ inventory_hostname }}"
+    state: present
+
+# ---------------------------------------------------------------------------
+# Guard: check if cluster is already initialized
+# ---------------------------------------------------------------------------
+- name: Check if Kubernetes control plane is already initialized
+  stat:
+    path: /etc/kubernetes/admin.conf
+  register: k8s_admin_conf
+
+# ---------------------------------------------------------------------------
+# kubeadm init
+#
+# --apiserver-advertise-address: private IP — used for all internal cluster
+#   communication. ansible_default_ipv4.address is the EC2 private IP.
+#
+# --apiserver-cert-extra-sans: adds the public IP (ansible_host from inventory)
+#   to the TLS SAN so kubectl from outside AWS can reach the API server.
+#
+# --pod-network-cidr: 192.168.0.0/16 — Calico's default; must match.
+#
+# --cri-socket: explicit socket path avoids ambiguity when multiple runtimes
+#   are detected.
+# ---------------------------------------------------------------------------
+- name: Initialize Kubernetes control plane with kubeadm
+  command: >
+    kubeadm init
+    --apiserver-advertise-address={{ ansible_default_ipv4.address }}
+    --apiserver-cert-extra-sans={{ ansible_host }},{{ ansible_default_ipv4.address }}
+    --pod-network-cidr={{ pod_network_cidr }}
+    --cri-socket=unix:///run/containerd/containerd.sock
+    --node-name={{ inventory_hostname }}
+  when: not k8s_admin_conf.stat.exists
+  register: kubeadm_init_result
+
+# ---------------------------------------------------------------------------
+# kubeconfig for ubuntu user
+# ---------------------------------------------------------------------------
+- name: Create .kube directory for ubuntu user
+  file:
+    path: /home/ubuntu/.kube
+    state: directory
+    owner: ubuntu
+    group: ubuntu
+    mode: '0755'
+
+- name: Copy admin.conf to ubuntu user kubeconfig
+  copy:
+    src: /etc/kubernetes/admin.conf
+    dest: /home/ubuntu/.kube/config
+    remote_src: yes
+    owner: ubuntu
+    group: ubuntu
+    mode: '0600'
+  # Idempotent: copy only updates if source differs from destination
+
+# ---------------------------------------------------------------------------
+# Join command — generated fresh each run so the token is never expired.
+# Workers gate their join on /etc/kubernetes/kubelet.conf, so regenerating
+# the token on re-runs is safe and does not cause workers to rejoin.
+# ---------------------------------------------------------------------------
+- name: Generate kubeadm join command
+  command: kubeadm token create --print-join-command
+  register: kubeadm_join_command
+  changed_when: false
+
+- name: Save join command to file on master
+  copy:
+    content: "{{ kubeadm_join_command.stdout }}"
+    dest: "{{ join_command_file }}"
+    mode: '0600'

@@ -1,0 +1,6 @@
+---
+- name: Enable kubelet
+  systemd:
+    name: kubelet
+    enabled: yes
+    daemon_reload: yes

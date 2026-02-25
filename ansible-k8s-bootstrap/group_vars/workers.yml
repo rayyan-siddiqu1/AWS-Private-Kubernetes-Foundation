@@ -1,0 +1,16 @@
+---
+# =============================================================================
+# group_vars/workers.yml — Variables applied to worker nodes only
+#
+# Workers live in the private subnet (no public IP). Ansible reaches them by
+# tunnelling SSH through the control plane node as a ProxyJump host.
+#
+# ansible_host for each worker is its private IP (set in hosts.ini).
+# hostvars[groups['masters'][0]]['ansible_host'] resolves to the master's
+# public IP at runtime from the inventory — no hardcoding required.
+# =============================================================================
+
+ansible_ssh_common_args: >-
+  -o StrictHostKeyChecking=no
+  -o UserKnownHostsFile=/dev/null
+  -o ProxyJump=ubuntu@{{ hostvars[groups['masters'][0]]['ansible_host'] }}

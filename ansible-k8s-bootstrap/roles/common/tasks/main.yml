@@ -1,0 +1,88 @@
+---
+# =============================================================================
+# common/tasks/main.yml
+#
+# Prepares every node for Kubernetes:
+#   - Disables swap (required by kubelet)
+#   - Loads required kernel modules
+#   - Configures sysctl for pod networking
+#   - Installs base OS packages
+# All tasks are idempotent and safe for re-execution.
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Swap — kubelet refuses to start if swap is enabled
+# ---------------------------------------------------------------------------
+- name: Disable swap immediately (runtime)
+  command: swapoff -a
+  changed_when: false
+  # swapoff -a on an already-disabled swap is a no-op; always safe to run
+
+- name: Comment out swap entries in /etc/fstab (persistent)
+  replace:
+    path: /etc/fstab
+    regexp: '^([^#].*?\sswap\s+\S+.*)$'
+    replace: '# \1'
+  # Idempotent: already-commented lines are not matched by the regexp
+
+# ---------------------------------------------------------------------------
+# Kernel modules — required before sysctl parameters can take effect
+# ---------------------------------------------------------------------------
+- name: Configure kernel modules to load at boot
+  copy:
+    dest: /etc/modules-load.d/k8s.conf
+    content: |
+      overlay
+      br_netfilter
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: Load overlay kernel module
+  command: modprobe overlay
+  changed_when: false
+  # modprobe on an already-loaded module is a no-op
+
+- name: Load br_netfilter kernel module
+  command: modprobe br_netfilter
+  changed_when: false
+
+# ---------------------------------------------------------------------------
+# sysctl — enable iptables bridge traffic inspection (required by kube-proxy)
+# and IPv4 forwarding (required for pod-to-pod routing)
+# ---------------------------------------------------------------------------
+- name: Configure sysctl parameters for Kubernetes networking
+  copy:
+    dest: /etc/sysctl.d/k8s.conf
+    content: |
+      net.bridge.bridge-nf-call-iptables  = 1
+      net.bridge.bridge-nf-call-ip6tables = 1
+      net.ipv4.ip_forward                 = 1
+    owner: root
+    group: root
+    mode: '0644'
+  notify: Apply sysctl settings
+
+- name: Flush handlers to apply sysctl immediately
+  meta: flush_handlers
+
+# ---------------------------------------------------------------------------
+# Base packages
+# ---------------------------------------------------------------------------
+- name: Update apt cache
+  apt:
+    update_cache: yes
+    cache_valid_time: 3600
+
+- name: Install required base packages
+  apt:
+    name:
+      - curl
+      - apt-transport-https
+      - ca-certificates
+      - gnupg
+      - lsb-release
+      - socat       # required by kubeadm preflight checks
+      - conntrack   # required by kube-proxy
+      - ipset       # used by kube-proxy in ipvs mode
+    state: present

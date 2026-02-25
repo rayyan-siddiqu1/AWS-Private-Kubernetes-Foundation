@@ -1,0 +1,49 @@
+---
+# =============================================================================
+# worker/tasks/main.yml
+#
+# Joins each worker node to the Kubernetes cluster using the join command
+# produced by the master role.
+#
+# Idempotency: the join is gated on the absence of
+# /etc/kubernetes/kubelet.conf — if this file exists, the node is already
+# part of the cluster and the join command is skipped entirely.
+#
+# The join command is read directly from the master via `slurp` (delegate_to)
+# so no file transfer through the Ansible controller is needed.
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Guard: check if this node has already joined
+# ---------------------------------------------------------------------------
+- name: Check if node is already part of the cluster
+  stat:
+    path: /etc/kubernetes/kubelet.conf
+  register: kubelet_conf
+
+# ---------------------------------------------------------------------------
+# Fetch join command from master
+# slurp reads the file on the master host and returns base64-encoded content.
+# delegate_to means this task runs against the master, not the worker.
+# ---------------------------------------------------------------------------
+- name: Read join command from master node
+  slurp:
+    src: "{{ join_command_file }}"
+  delegate_to: "{{ groups['masters'][0] }}"
+  register: join_command_b64
+  when: not kubelet_conf.stat.exists
+
+# ---------------------------------------------------------------------------
+# Join the cluster
+# ---------------------------------------------------------------------------
+- name: Join worker node to Kubernetes cluster
+  command: "{{ join_command_b64.content | b64decode | trim }}"
+  when: not kubelet_conf.stat.exists
+  register: kubeadm_join_result
+
+- name: Show kubeadm join output
+  debug:
+    var: kubeadm_join_result.stdout_lines
+  when:
+    - not kubelet_conf.stat.exists
+    - kubeadm_join_result is defined

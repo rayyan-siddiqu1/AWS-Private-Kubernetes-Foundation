@@ -1,0 +1,40 @@
+---
+# =============================================================================
+# group_vars/all.yml — Variables applied to every host in the inventory
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Kubernetes
+# ---------------------------------------------------------------------------
+# Minor version only — patch is resolved by the apt repository
+kubernetes_version: "1.32"
+
+# Path where the Kubernetes apt GPG keyring is stored
+kubernetes_apt_keyring: /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+
+# Pod CIDR — must match --pod-network-cidr in kubeadm init and Calico's default
+pod_network_cidr: "192.168.0.0/16"
+
+# ---------------------------------------------------------------------------
+# Containerd
+# ---------------------------------------------------------------------------
+containerd_config_path: /etc/containerd/config.toml
+
+# ---------------------------------------------------------------------------
+# Calico CNI
+# ---------------------------------------------------------------------------
+calico_version: "v3.29.1"
+calico_manifest_url: "https://raw.githubusercontent.com/projectcalico/calico/v3.29.1/manifests/calico.yaml"
+
+# ---------------------------------------------------------------------------
+# Metrics Server
+# ---------------------------------------------------------------------------
+# Pinning to latest avoids breakage on unexpected manifest changes.
+# Replace with a specific version tag for stricter reproducibility.
+metrics_server_manifest_url: "https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml"
+
+# ---------------------------------------------------------------------------
+# Join command
+# ---------------------------------------------------------------------------
+# File on the master that stores the kubeadm join command for workers to consume
+join_command_file: /tmp/kubeadm_join_command.sh

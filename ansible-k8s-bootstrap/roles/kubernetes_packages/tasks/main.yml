@@ -1,0 +1,76 @@
+---
+# =============================================================================
+# kubernetes_packages/tasks/main.yml
+#
+# Adds the official Kubernetes apt repository and installs kubelet, kubeadm,
+# and kubectl at the specified minor version. All three packages are held
+# to prevent uncontrolled upgrades by unattended-upgrades or apt.
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# APT repository setup — pkgs.k8s.io (new, post-Google repo)
+# ---------------------------------------------------------------------------
+- name: Create /etc/apt/keyrings directory
+  file:
+    path: /etc/apt/keyrings
+    state: directory
+    mode: '0755'
+
+- name: Download Kubernetes apt repository GPG key
+  get_url:
+    url: "https://pkgs.k8s.io/core:/stable:/v{{ kubernetes_version }}/deb/Release.key"
+    dest: /tmp/kubernetes-release.key
+    mode: '0644'
+    force: false
+
+- name: Dearmor and install Kubernetes GPG key
+  shell: gpg --dearmor < /tmp/kubernetes-release.key > {{ kubernetes_apt_keyring }}
+  args:
+    creates: "{{ kubernetes_apt_keyring }}"
+  # Idempotent via creates directive
+
+- name: Add Kubernetes apt repository
+  apt_repository:
+    repo: "deb [signed-by={{ kubernetes_apt_keyring }}] https://pkgs.k8s.io/core:/stable:/v{{ kubernetes_version }}/deb/ /"
+    state: present
+    filename: kubernetes
+    update_cache: yes
+
+# ---------------------------------------------------------------------------
+# Install packages
+# ---------------------------------------------------------------------------
+- name: Install kubelet, kubeadm, and kubectl
+  apt:
+    name:
+      - kubelet
+      - kubeadm
+      - kubectl
+    state: present
+  notify: Enable kubelet
+
+# ---------------------------------------------------------------------------
+# Hold versions — prevent apt from auto-upgrading Kubernetes binaries
+# ---------------------------------------------------------------------------
+- name: Hold kubelet at installed version
+  command: apt-mark hold kubelet
+  register: hold_kubelet
+  changed_when: "'was already set on hold' not in hold_kubelet.stdout"
+
+- name: Hold kubeadm at installed version
+  command: apt-mark hold kubeadm
+  register: hold_kubeadm
+  changed_when: "'was already set on hold' not in hold_kubeadm.stdout"
+
+- name: Hold kubectl at installed version
+  command: apt-mark hold kubectl
+  register: hold_kubectl
+  changed_when: "'was already set on hold' not in hold_kubectl.stdout"
+
+# ---------------------------------------------------------------------------
+# Ensure kubelet is enabled (it will fail to start until kubeadm init/join)
+# ---------------------------------------------------------------------------
+- name: Enable kubelet service
+  systemd:
+    name: kubelet
+    enabled: yes
+    daemon_reload: yes

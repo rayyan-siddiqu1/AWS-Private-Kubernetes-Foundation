@@ -1,0 +1,10 @@
+---
+# =============================================================================
+# group_vars/masters.yml — Variables applied to control plane nodes only
+# =============================================================================
+
+# Source path of admin kubeconfig produced by kubeadm init
+kubeconfig_src: /etc/kubernetes/admin.conf
+
+# Destination in ubuntu's home so kubectl works without sudo
+kubeconfig_dest: /home/ubuntu/.kube/config

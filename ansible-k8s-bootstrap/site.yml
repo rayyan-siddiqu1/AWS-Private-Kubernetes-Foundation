@@ -1,0 +1,65 @@
+---
+# =============================================================================
+# site.yml — Kubernetes Cluster Bootstrap Orchestration
+#
+# Execution order:
+#   1. common              → all nodes  (swap, kernel modules, sysctl, packages)
+#   2. container_runtime   → all nodes  (containerd + SystemdCgroup)
+#   3. kubernetes_packages → all nodes  (kubelet, kubeadm, kubectl)
+#   4. master              → masters    (kubeadm init, kubeconfig, join command)
+#   5. worker              → workers    (kubeadm join)
+#   6. cni                 → masters    (Calico manifest, wait for Ready nodes)
+#   7. metrics_server      → masters    (metrics-server + insecure-tls patch)
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Play 1: Common system hardening — all nodes
+# ---------------------------------------------------------------------------
+- name: Apply common system configuration to all cluster nodes
+  hosts: k8s_cluster
+  become: true
+  gather_facts: true
+  roles:
+    - common
+    - container_runtime
+    - kubernetes_packages
+
+# ---------------------------------------------------------------------------
+# Play 2: Bootstrap Kubernetes control plane
+# ---------------------------------------------------------------------------
+- name: Initialize Kubernetes control plane
+  hosts: masters
+  become: true
+  gather_facts: true
+  roles:
+    - master
+
+# ---------------------------------------------------------------------------
+# Play 3: Join worker nodes
+# ---------------------------------------------------------------------------
+- name: Join worker nodes to the cluster
+  hosts: workers
+  become: true
+  gather_facts: true
+  roles:
+    - worker
+
+# ---------------------------------------------------------------------------
+# Play 4: Install Calico CNI — run from control plane
+# ---------------------------------------------------------------------------
+- name: Install Calico CNI and wait for nodes to be Ready
+  hosts: masters
+  become: true
+  gather_facts: false
+  roles:
+    - cni
+
+# ---------------------------------------------------------------------------
+# Play 5: Install Metrics Server — run from control plane
+# ---------------------------------------------------------------------------
+- name: Install and patch Metrics Server
+  hosts: masters
+  become: true
+  gather_facts: false
+  roles:
+    - metrics_server

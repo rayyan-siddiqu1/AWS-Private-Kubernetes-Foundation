@@ -1,0 +1,107 @@
+---
+# =============================================================================
+# container_runtime/tasks/main.yml
+#
+# Installs containerd from the official Docker apt repository and configures
+# it for use with Kubernetes (SystemdCgroup = true is mandatory).
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# APT repository setup
+# ---------------------------------------------------------------------------
+- name: Create /etc/apt/keyrings directory
+  file:
+    path: /etc/apt/keyrings
+    state: directory
+    mode: '0755'
+
+- name: Download Docker apt repository GPG key
+  get_url:
+    url: https://download.docker.com/linux/ubuntu/gpg
+    dest: /tmp/docker-archive-keyring.gpg
+    mode: '0644'
+    force: false
+  # force: false — skips download if file already exists
+
+- name: Dearmor and install Docker GPG key
+  shell: gpg --dearmor < /tmp/docker-archive-keyring.gpg > /etc/apt/keyrings/docker.gpg
+  args:
+    creates: /etc/apt/keyrings/docker.gpg
+  # creates: makes this task idempotent — skipped if keyring already exists
+
+- name: Add Docker apt repository (provides containerd.io)
+  apt_repository:
+    repo: >-
+      deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.gpg]
+      https://download.docker.com/linux/ubuntu
+      {{ ansible_distribution_release }} stable
+    state: present
+    filename: docker
+    update_cache: yes
+
+# ---------------------------------------------------------------------------
+# Install containerd
+# ---------------------------------------------------------------------------
+- name: Install containerd.io
+  apt:
+    name: containerd.io
+    state: present
+  notify: Restart containerd
+
+# ---------------------------------------------------------------------------
+# containerd configuration — SystemdCgroup must be true for kubelet to work
+#
+# WHY NOT uses `creates:` here:
+# The Docker containerd.io package ships /etc/containerd/config.toml with
+# only `disabled_plugins = ["cri"]`. A file-existence guard would skip
+# generation, leaving containerd without CRI plugin config and causing:
+#   "rpc error: code = Unimplemented desc = unknown service runtime.v1.RuntimeService"
+#
+# Instead, we check for the CRI plugin section in the file content. If it is
+# absent (empty file, stub config, or disabled_plugins only), we regenerate.
+# ---------------------------------------------------------------------------
+- name: Create containerd config directory
+  file:
+    path: /etc/containerd
+    state: directory
+    mode: '0755'
+
+- name: Check if containerd config has CRI plugin configured
+  command: grep -q 'io.containerd.grpc.v1.cri' {{ containerd_config_path }}
+  register: cri_config_check
+  changed_when: false
+  failed_when: false
+  # rc=0 → CRI plugin section exists (config is valid)
+  # rc=1 → CRI plugin absent (stub/empty/disabled — must regenerate)
+
+- name: Generate default containerd config
+  shell: containerd config default > {{ containerd_config_path }}
+  when: cri_config_check.rc != 0
+  notify: Restart containerd
+
+- name: Set SystemdCgroup = true in containerd config
+  replace:
+    path: "{{ containerd_config_path }}"
+    regexp: 'SystemdCgroup\s*=\s*false'
+    replace: 'SystemdCgroup = true'
+  notify: Restart containerd
+  # Idempotent: replace finds nothing to do if already set to true
+
+# ---------------------------------------------------------------------------
+# Ensure service is running
+# ---------------------------------------------------------------------------
+- name: Enable and start containerd service
+  systemd:
+    name: containerd
+    enabled: yes
+    state: started
+    daemon_reload: yes
+
+- name: Flush handlers before validating containerd
+  meta: flush_handlers
+
+- name: Validate containerd service is active
+  command: systemctl is-active containerd
+  register: containerd_status
+  changed_when: false
+  failed_when: containerd_status.stdout != 'active'

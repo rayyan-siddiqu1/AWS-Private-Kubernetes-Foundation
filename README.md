@@ -343,7 +343,143 @@ A `.gitignore` is included at the project root covering:
 
 ---
 
+## Ansible — Kubernetes Bootstrap
+
+The `ansible-k8s-bootstrap/` directory contains a fully modular, idempotent Ansible project that installs and configures a kubeadm-based Kubernetes cluster on the EC2 instances provisioned by Terraform.
+
+### Ansible Project Structure
+
+```
+ansible-k8s-bootstrap/
+├── ansible.cfg                  SSH settings, privilege escalation, fact caching
+├── site.yml                     Orchestration — 5 plays in dependency order
+├── inventory/
+│   └── hosts.ini                Static inventory (masters + workers)
+├── group_vars/
+│   ├── all.yml                  Shared vars: k8s version, CIDRs, manifests
+│   ├── masters.yml              Control-plane-specific vars
+│   └── workers.yml              ProxyJump config (workers in private subnet)
+└── roles/
+    ├── common/                  Swap, kernel modules, sysctl, base packages
+    ├── container_runtime/       containerd from Docker repo, SystemdCgroup=true
+    ├── kubernetes_packages/     kubelet + kubeadm + kubectl, held versions
+    ├── master/                  kubeadm init, kubeconfig, join command
+    ├── worker/                  kubeadm join (reads command from master)
+    ├── cni/                     Calico v3.29.1 manifest, waits for Ready nodes
+    └── metrics_server/          metrics-server + --kubelet-insecure-tls patch
+```
+
+### Prerequisites
+
+```bash
+# Install Ansible (>= 2.14 recommended)
+pip install ansible
+
+# Verify SSH key is loaded (needed for ProxyJump through master to workers)
+ssh-add ~/.ssh/terraform-keypair.pem
+ssh-add -l
+```
+
+### Configure Inventory
+
+Fill in the real IPs from Terraform outputs:
+
+```bash
+# Get values
+cd terraform/environments/dev
+terraform output control_plane_public_ip
+terraform output worker_private_ips
+```
+
+Edit `ansible-k8s-bootstrap/inventory/hosts.ini`:
+
+```ini
+[masters]
+control-plane ansible_host=<MASTER_PUBLIC_IP> ansible_user=ubuntu
+
+[workers]
+worker1 ansible_host=<WORKER1_PRIVATE_IP> ansible_user=ubuntu
+worker2 ansible_host=<WORKER2_PRIVATE_IP> ansible_user=ubuntu
+```
+
+### Run the Playbook
+
+```bash
+cd ansible-k8s-bootstrap
+
+# Dry run first
+ansible-playbook -i inventory/hosts.ini site.yml --check
+
+# Full deployment
+ansible-playbook -i inventory/hosts.ini site.yml
+```
+
+### Validate the Cluster
+
+SSH to the control plane after the playbook completes:
+
+```bash
+ssh -i ~/.ssh/terraform-keypair.pem ubuntu@<MASTER_PUBLIC_IP>
+
+# All 3 nodes Ready
+kubectl get nodes -o wide
+
+# Calico pods running
+kubectl get pods -n kube-system
+
+# Metrics working
+kubectl top nodes
+```
+
+### Role Responsibilities
+
+| Role | Runs On | Key Actions |
+|------|---------|-------------|
+| `common` | All nodes | Disable swap, load `overlay`+`br_netfilter`, configure sysctl, install base packages |
+| `container_runtime` | All nodes | Install `containerd.io` from Docker repo, set `SystemdCgroup=true`, validate service |
+| `kubernetes_packages` | All nodes | Add `pkgs.k8s.io` repo, install and hold `kubelet`/`kubeadm`/`kubectl` |
+| `master` | Control plane | `kubeadm init` (idempotent), set up kubeconfig, generate join command |
+| `worker` | Workers | Fetch join command from master via `slurp`, run `kubeadm join` (idempotent) |
+| `cni` | Control plane | Apply Calico manifest, wait for all nodes `Ready` |
+| `metrics_server` | Control plane | Apply manifest, patch `--kubelet-insecure-tls`, verify `kubectl top nodes` |
+
+### Idempotency Design
+
+| Concern | Guard Mechanism |
+|---------|----------------|
+| kubeadm init reruns | `stat /etc/kubernetes/admin.conf` |
+| Worker rejoins cluster | `stat /etc/kubernetes/kubelet.conf` |
+| containerd config regenerated | `args: creates:` on shell task |
+| GPG keys re-dearmored | `args: creates:` on shell task |
+| metrics-server double-patched | `when: 'kubelet-insecure-tls' not in ms_args.stdout` |
+| sysctl double-applied | Handler fires only when `/etc/sysctl.d/k8s.conf` changes |
+
+### Private Subnet SSH Access
+
+Workers have no public IP. `group_vars/workers.yml` configures a `ProxyJump` through the control plane for all worker SSH connections — no manual tunnel or bastion setup needed:
+
+```yaml
+ansible_ssh_common_args: >-
+  -o ProxyJump=ubuntu@{{ hostvars[groups['masters'][0]]['ansible_host'] }}
+```
+
+---
+
 ## Known Issues & Notes
+
+### containerd CRI plugin missing after install
+
+The Docker `containerd.io` package ships `/etc/containerd/config.toml` pre-populated with only `disabled_plugins = ["cri"]`. A file-existence guard (`creates:`) would skip `containerd config default`, leaving containerd without a CRI configuration. kubeadm then fails with:
+
+```
+rpc error: code = Unimplemented desc = unknown service runtime.v1.RuntimeService
+```
+
+**Fix**: the `container_runtime` role uses a content-based check — it greps for the CRI plugin section (`io.containerd.grpc.v1.cri`) and regenerates the config if absent, regardless of whether the file exists.
+
+### kubeadm hostname preflight warning
+
+kubeadm validates that `--node-name` resolves locally. The EC2 hostname is `ip-10-x-x-x`, not the Ansible inventory alias (`control-plane`). The `master` role adds `127.0.1.1 control-plane` to `/etc/hosts` before `kubeadm init` to satisfy the check without altering the system hostname.
 
 ### AWS description field charset restrictions
 

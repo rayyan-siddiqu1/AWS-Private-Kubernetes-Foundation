@@ -1,0 +1,99 @@
+---
+# =============================================================================
+# metrics_server/tasks/main.yml
+#
+# Installs metrics-server and patches the deployment to add
+# --kubelet-insecure-tls. This flag is required in vanilla kubeadm clusters
+# because kubelets use self-signed certificates that metrics-server cannot
+# verify without extra CA configuration.
+#
+# Idempotency:
+#   - kubectl apply is idempotent by design.
+#   - The patch task checks whether --kubelet-insecure-tls is already present
+#     in the deployment args before patching.
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Apply manifest
+# ---------------------------------------------------------------------------
+- name: Apply metrics-server manifest
+  command: kubectl apply -f {{ metrics_server_manifest_url }}
+  become: false
+  environment:
+    KUBECONFIG: /home/ubuntu/.kube/config
+  register: ms_apply
+  changed_when: >
+    'created' in ms_apply.stdout or
+    'configured' in ms_apply.stdout
+
+# ---------------------------------------------------------------------------
+# Wait for the deployment object to exist before patching
+# ---------------------------------------------------------------------------
+- name: Wait for metrics-server deployment to be created
+  command: kubectl get deployment metrics-server -n kube-system
+  become: false
+  environment:
+    KUBECONFIG: /home/ubuntu/.kube/config
+  register: ms_deployment_check
+  retries: 12
+  delay: 5
+  until: ms_deployment_check.rc == 0
+  changed_when: false
+
+# ---------------------------------------------------------------------------
+# Patch: add --kubelet-insecure-tls
+# The JSON patch appends to the args array only if the flag is not present.
+# ---------------------------------------------------------------------------
+- name: Check current metrics-server container args
+  command: >
+    kubectl get deployment metrics-server
+    -n kube-system
+    -o jsonpath='{.spec.template.spec.containers[0].args}'
+  become: false
+  environment:
+    KUBECONFIG: /home/ubuntu/.kube/config
+  register: ms_args
+  changed_when: false
+
+- name: Patch metrics-server to add --kubelet-insecure-tls
+  command: >
+    kubectl patch deployment metrics-server
+    -n kube-system
+    --type=json
+    -p='[{"op": "add", "path": "/spec/template/spec/containers/0/args/-", "value": "--kubelet-insecure-tls"}]'
+  become: false
+  environment:
+    KUBECONFIG: /home/ubuntu/.kube/config
+  when: "'kubelet-insecure-tls' not in ms_args.stdout"
+  # when condition makes this idempotent — skipped if arg already present
+
+# ---------------------------------------------------------------------------
+# Wait for rollout to complete after patch
+# ---------------------------------------------------------------------------
+- name: Wait for metrics-server rollout to complete
+  command: >
+    kubectl rollout status deployment/metrics-server
+    -n kube-system
+    --timeout=180s
+  become: false
+  environment:
+    KUBECONFIG: /home/ubuntu/.kube/config
+  changed_when: false
+
+# ---------------------------------------------------------------------------
+# Validate: kubectl top nodes must return data (not just headers)
+# ---------------------------------------------------------------------------
+- name: Verify kubectl top nodes returns metrics
+  command: kubectl top nodes
+  become: false
+  environment:
+    KUBECONFIG: /home/ubuntu/.kube/config
+  register: top_nodes
+  retries: 12
+  delay: 15
+  until: top_nodes.rc == 0 and top_nodes.stdout_lines | length > 1
+  changed_when: false
+
+- name: Print kubectl top nodes output
+  debug:
+    var: top_nodes.stdout_lines

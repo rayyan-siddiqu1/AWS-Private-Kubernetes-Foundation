@@ -1,0 +1,91 @@
+---
+# =============================================================================
+# cni/tasks/main.yml
+#
+# Installs Calico CNI by applying the official manifest. All kubectl commands
+# run as the ubuntu user (become: false) since kubeconfig lives at
+# /home/ubuntu/.kube/config.
+#
+# Calico pod-network-cidr default (192.168.0.0/16) matches kubeadm init,
+# so no CIDR patching of the manifest is required.
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Apply Calico manifest
+# changed_when detects whether kubectl actually created/modified resources.
+# On re-runs, resources already exist and kubectl reports "unchanged".
+# ---------------------------------------------------------------------------
+- name: Apply Calico CNI manifest
+  command: kubectl apply -f {{ calico_manifest_url }}
+  become: false
+  environment:
+    KUBECONFIG: /home/ubuntu/.kube/config
+  register: calico_apply
+  changed_when: >
+    'created' in calico_apply.stdout or
+    'configured' in calico_apply.stdout
+
+# ---------------------------------------------------------------------------
+# Wait for Calico node DaemonSet pods to appear before checking readiness
+# ---------------------------------------------------------------------------
+- name: Wait for Calico node pods to appear
+  command: >
+    kubectl get pods -n kube-system -l k8s-app=calico-node --no-headers
+  become: false
+  environment:
+    KUBECONFIG: /home/ubuntu/.kube/config
+  register: calico_pod_list
+  retries: 20
+  delay: 10
+  until: calico_pod_list.stdout_lines | length > 0
+  changed_when: false
+
+# ---------------------------------------------------------------------------
+# Wait for Calico pods to reach Ready state
+# kubectl wait blocks until condition is met or timeout expires.
+# ---------------------------------------------------------------------------
+- name: Wait for Calico node pods to be Ready
+  command: >
+    kubectl wait pods
+    -n kube-system
+    -l k8s-app=calico-node
+    --for=condition=Ready
+    --timeout=300s
+  become: false
+  environment:
+    KUBECONFIG: /home/ubuntu/.kube/config
+  changed_when: false
+
+- name: Wait for calico-kube-controllers to be Ready
+  command: >
+    kubectl wait pods
+    -n kube-system
+    -l k8s-app=calico-kube-controllers
+    --for=condition=Ready
+    --timeout=300s
+  become: false
+  environment:
+    KUBECONFIG: /home/ubuntu/.kube/config
+  changed_when: false
+
+# ---------------------------------------------------------------------------
+# Validate all cluster nodes reach Ready state
+# ---------------------------------------------------------------------------
+- name: Wait for all nodes to be Ready
+  command: kubectl wait node --all --for=condition=Ready --timeout=300s
+  become: false
+  environment:
+    KUBECONFIG: /home/ubuntu/.kube/config
+  changed_when: false
+
+- name: Show node status
+  command: kubectl get nodes -o wide
+  become: false
+  environment:
+    KUBECONFIG: /home/ubuntu/.kube/config
+  register: node_status
+  changed_when: false
+
+- name: Print node status
+  debug:
+    var: node_status.stdout_lines
