@@ -156,6 +156,32 @@ resource "aws_vpc_security_group_ingress_rule" "cp_bgp_from_workers" {
 }
 
 # ---------------------------------------------------------------------------
+# Control Plane — NGINX Ingress NodePorts (admin access only)
+# Ports 30080/30443 are where NGINX Ingress is exposed in NodePort mode.
+# ---------------------------------------------------------------------------
+resource "aws_vpc_security_group_ingress_rule" "cp_ingress_http_from_admin" {
+  security_group_id = aws_security_group.control_plane.id
+  description       = "NGINX Ingress HTTP NodePort from admin IP"
+  ip_protocol       = "tcp"
+  from_port         = 30080
+  to_port           = 30080
+  cidr_ipv4         = var.my_ip
+
+  tags = merge(local.common_tags, { Name = "cp-ingress-http-admin" })
+}
+
+resource "aws_vpc_security_group_ingress_rule" "cp_ingress_https_from_admin" {
+  security_group_id = aws_security_group.control_plane.id
+  description       = "NGINX Ingress HTTPS NodePort from admin IP"
+  ip_protocol       = "tcp"
+  from_port         = 30443
+  to_port           = 30443
+  cidr_ipv4         = var.my_ip
+
+  tags = merge(local.common_tags, { Name = "cp-ingress-https-admin" })
+}
+
+# ---------------------------------------------------------------------------
 # Control Plane — Egress
 # ---------------------------------------------------------------------------
 resource "aws_vpc_security_group_egress_rule" "cp_all_outbound" {
