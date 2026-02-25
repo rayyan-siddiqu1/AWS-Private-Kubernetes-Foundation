@@ -8,11 +8,10 @@ controller:
   metrics:
     enabled: true
     serviceMonitor:
-      # Picked up automatically by kube-prometheus-stack when installed.
-      enabled: true
-      namespace: "{{ ingress_nginx_namespace }}"
-      namespaceSelector:
-        any: true
+      # Disabled here — kube-prometheus-stack CRDs (ServiceMonitor) are not yet
+      # installed at this point in the play order. Prometheus will scrape NGINX
+      # metrics via pod annotation discovery once monitoring is installed.
+      enabled: false
 
   config:
     use-forwarded-headers: "true"

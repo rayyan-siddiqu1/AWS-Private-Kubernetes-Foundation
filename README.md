@@ -195,6 +195,8 @@ All EBS volumes are **encrypted** and type **gp3**.
 | Ingress | TCP | 10259 | self | Scheduler health |
 | Ingress | UDP | 8472 | worker-sg | CNI VXLAN overlay |
 | Ingress | TCP | 179 | worker-sg | Calico BGP |
+| Ingress | TCP | 30080 | `my_ip` | NGINX Ingress HTTP (NodePort) |
+| Ingress | TCP | 30443 | `my_ip` | NGINX Ingress HTTPS (NodePort) |
 | Egress | All | All | 0.0.0.0/0 | Internet (via IGW) |
 
 ### worker-sg

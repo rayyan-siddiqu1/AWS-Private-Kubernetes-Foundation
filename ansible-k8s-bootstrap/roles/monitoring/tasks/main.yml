@@ -28,7 +28,7 @@
     binary_path: "{{ helm_binary_path }}"
     kubeconfig: /home/ubuntu/.kube/config
     wait: true
-    wait_timeout: 600
+    wait_timeout: "600s"
   become: false
 
 - name: Wait for Grafana deployment to be Available
