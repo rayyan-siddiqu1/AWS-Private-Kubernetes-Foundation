@@ -402,15 +402,45 @@ worker1 ansible_host=<WORKER1_PRIVATE_IP> ansible_user=ubuntu
 worker2 ansible_host=<WORKER2_PRIVATE_IP> ansible_user=ubuntu
 ```
 
+### WSL + Windows Filesystem Setup
+
+If running from WSL with the project on the Windows filesystem (`/mnt/c/...`), two extra steps are required:
+
+**1. Copy the PEM key to the WSL filesystem** — NTFS cannot enforce `chmod 400`, which SSH requires:
+
+```bash
+cp "/mnt/c/Users/rayyan/Desktop/Project/AWS Private Kubernetes Foundation/terraform-keypair.pem" \
+   ~/.ssh/terraform-keypair.pem
+chmod 400 ~/.ssh/terraform-keypair.pem
+```
+
+**2. Set `ANSIBLE_CONFIG`** — Ansible ignores `ansible.cfg` in world-writable directories (all of `/mnt/c/` appears 777 in WSL). The env variable bypasses this check:
+
+```bash
+export ANSIBLE_CONFIG="/mnt/c/Users/rayyan/Desktop/Project/AWS Private Kubernetes Foundation/ansible-k8s-bootstrap/ansible.cfg"
+# Persist it:
+echo 'export ANSIBLE_CONFIG="..."' >> ~/.bashrc
+```
+
+**3. Load the SSH key into the agent** — required for ProxyJump to workers:
+
+```bash
+eval "$(ssh-agent -s)"
+ssh-add ~/.ssh/terraform-keypair.pem
+```
+
 ### Run the Playbook
 
 ```bash
 cd ansible-k8s-bootstrap
 
-# Dry run first
+# Test connectivity first
+ansible all -i inventory/hosts.ini -m ping
+
+# Dry run
 ansible-playbook -i inventory/hosts.ini site.yml --check
 
-# Full deployment
+# Full deployment (~8-12 minutes)
 ansible-playbook -i inventory/hosts.ini site.yml
 ```
 
@@ -449,7 +479,7 @@ kubectl top nodes
 |---------|----------------|
 | kubeadm init reruns | `stat /etc/kubernetes/admin.conf` |
 | Worker rejoins cluster | `stat /etc/kubernetes/kubelet.conf` |
-| containerd config regenerated | `args: creates:` on shell task |
+| containerd config regenerated | `grep io.containerd.grpc.v1.cri` — regenerate only if CRI section absent |
 | GPG keys re-dearmored | `args: creates:` on shell task |
 | metrics-server double-patched | `when: 'kubelet-insecure-tls' not in ms_args.stdout` |
 | sysctl double-applied | Handler fires only when `/etc/sysctl.d/k8s.conf` changes |
